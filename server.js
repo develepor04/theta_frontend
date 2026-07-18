@@ -53,24 +53,43 @@ function resolveBackendUrl(raw) {
   return parsed.origin; // protocol + host (+ port if any)
 }
 
-const RAW_BACKEND_URL = process.env.BACKEND_URL;
+// Fallback when Azure App Setting isn't visible to the Node process
+// (portal can show BACKEND_URL while process.env.BACKEND_URL is still empty).
+const DEFAULT_BACKEND_URL =
+  'https://theta-backend-a2d7g4ash4ddhmc3.canadacentral-01.azurewebsites.net';
+
+const RAW_BACKEND_URL =
+  process.env.BACKEND_URL ||
+  process.env.API_URL ||
+  process.env.VITE_API_URL ||
+  DEFAULT_BACKEND_URL;
+
 const BACKEND_ORIGIN = resolveBackendUrl(RAW_BACKEND_URL);
 
 if (BACKEND_ORIGIN) {
-  console.log(`Proxying /api → ${BACKEND_ORIGIN}`);
+  const fromEnv = Boolean(process.env.BACKEND_URL || process.env.API_URL || process.env.VITE_API_URL);
+  console.log(
+    `Proxying /api → ${BACKEND_ORIGIN}` + (fromEnv ? '' : ' (built-in default)')
+  );
 } else {
   console.warn(
-    `[proxy] BACKEND_URL missing or invalid (raw=${JSON.stringify(RAW_BACKEND_URL ?? null)}). ` +
-      '/api will return 503 JSON until you set it on this frontend App Service.'
+    `[proxy] No valid backend URL (raw=${JSON.stringify(RAW_BACKEND_URL ?? null)}).`
   );
 }
 
 // Diagnostic — open in browser to verify the proxy env is loaded
 app.get('/__health', (_req, res) => {
+  const raw = RAW_BACKEND_URL == null ? null : String(RAW_BACKEND_URL);
   res.json({
     ok: true,
     backendConfigured: Boolean(BACKEND_ORIGIN),
     backendOrigin: BACKEND_ORIGIN,
+    // Helps distinguish "not set" vs "set but invalid" without leaking full secrets
+    backendUrlPresent: Boolean(raw && raw.trim()),
+    backendUrlLength: raw ? raw.trim().length : 0,
+    backendUrlEndsWithAzurewebsites: Boolean(
+      raw && /\.azurewebsites\.net\/?$/i.test(raw.trim().replace(/^["']|["']$/g, ''))
+    ),
   });
 });
 

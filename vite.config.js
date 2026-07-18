@@ -13,10 +13,11 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
-        // target: 'https://pmo-backend.thetadynamics.io',
+        // Local backend: 'http://localhost:5000'
+        // Azure backend (same as BACKEND_URL):
+        target: 'https://theta-backend-a2d7g4ash4ddhmc3.canadacentral-01.azurewebsites.net',
         changeOrigin: true,
-        secure: false,
+        secure: true,
       },
     },
   },
