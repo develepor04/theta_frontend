@@ -5,15 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "node server.js",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.4.0",
     "@tailwindcss/vite": "^4.2.1",
-    "@univerjs/presets": "0.25.0",
     "@univerjs/preset-sheets-core": "0.25.0",
+    "@univerjs/presets": "0.25.0",
     "axios": "^1.6.5",
+    "express": "^5.2.1",
     "framer-motion": "^10.18.0",
     "gsap": "^3.12.4",
     "lucide-react": "^0.309.0",
