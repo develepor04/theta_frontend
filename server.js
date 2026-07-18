@@ -1,48 +1,106 @@
 import express from 'express';
+import http from 'http';
+import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createProxyMiddleware } from 'http-proxy-middleware';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Backend URL — set as Azure App Setting: BACKEND_URL
-// Example: https://theta-backend-xxxxx.azurewebsites.net
-const BACKEND_URL = process.env.BACKEND_URL;
+/**
+ * Normalize Azure App Setting → absolute origin URL.
+ * Rejects truncated / relative values that cause "TypeError: Invalid URL".
+ */
+function resolveBackendUrl(raw) {
+  if (!raw) return null;
 
-if (BACKEND_URL) {
-  app.use(
-    '/api',
-    createProxyMiddleware({
-      target: BACKEND_URL,
-      changeOrigin: true,
-      secure: true,
-      // Keep /api prefix — backend expects /api/...
-      on: {
-        error(err, req, res) {
-          console.error('[proxy]', err.message);
-          if (!res.headersSent) {
-            res.writeHead(502, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ detail: 'Backend unavailable' }));
-          }
-        },
+  let value = String(raw).trim();
+  // Strip accidental wrapping quotes from App Settings
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+  // Allow host-only values
+  if (value && !/^https?:\/\//i.test(value)) {
+    value = `https://${value}`;
+  }
+  // Drop trailing slash — we append paths ourselves
+  value = value.replace(/\/+$/, '');
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    console.error(
+      `[proxy] BACKEND_URL is not a valid URL: ${JSON.stringify(raw)}. ` +
+        'Example: https://theta-backend-xxxxx.canadacentral-01.azurewebsites.net'
+    );
+    return null;
+  }
+
+  if (!parsed.hostname.includes('.')) {
+    console.error(
+      `[proxy] BACKEND_URL hostname looks incomplete: ${parsed.hostname}. ` +
+        'Check for a truncated value in Azure App Settings (must end with .azurewebsites.net).'
+    );
+    return null;
+  }
+
+  return parsed.origin; // protocol + host (+ port if any)
+}
+
+const BACKEND_ORIGIN = resolveBackendUrl(process.env.BACKEND_URL);
+
+if (BACKEND_ORIGIN) {
+  const backend = new URL(BACKEND_ORIGIN);
+  const transport = backend.protocol === 'https:' ? https : http;
+
+  app.use('/api', (req, res) => {
+    // Express strips the /api mount → restore full path for the backend
+    const targetPath = req.originalUrl || `/api${req.url}`;
+
+    const headers = { ...req.headers, host: backend.host };
+    delete headers['content-length']; // let Node recalculate if body is piped
+
+    const proxyReq = transport.request(
+      {
+        protocol: backend.protocol,
+        hostname: backend.hostname,
+        port: backend.port || (backend.protocol === 'https:' ? 443 : 80),
+        path: targetPath,
+        method: req.method,
+        headers,
       },
-    })
-  );
-  console.log(`Proxying /api → ${BACKEND_URL}`);
+      (proxyRes) => {
+        res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+        proxyRes.pipe(res);
+      }
+    );
+
+    proxyReq.on('error', (err) => {
+      console.error('[proxy]', err.message);
+      if (!res.headersSent) {
+        res.status(502).json({ detail: 'Backend unavailable', error: err.message });
+      }
+    });
+
+    req.pipe(proxyReq);
+  });
+
+  console.log(`Proxying /api → ${BACKEND_ORIGIN}`);
 } else {
   console.warn(
-    'BACKEND_URL is not set. /api requests will fall through to index.html. ' +
-      'Set BACKEND_URL in Azure App Settings to your backend App Service URL.'
+    'BACKEND_URL is missing or invalid. /api requests will serve index.html. ' +
+      'Set BACKEND_URL in Azure to e.g. https://your-backend.azurewebsites.net'
   );
 }
 
-// Serve static files from the Vite build output
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Fallback: serve index.html for SPA client-side routing (non-API routes only)
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
