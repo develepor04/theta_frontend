@@ -52,4 +52,4 @@ jobs:
           app-name: 'theta-frontend'
           slot-name: 'Production'
           package: .
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_FB2D9C526EDD4021A820122BD51E1096 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_027E552924BC4FEBB1F9FF25039345AD }}
