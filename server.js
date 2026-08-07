@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
 import path from 'path';
@@ -9,8 +10,30 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+/** Load .env into process.env without overriding Azure/shell vars. */
+function loadDotEnv(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  for (const line of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let val = trimmed.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+}
+
+loadDotEnv(path.join(__dirname, '.env'));
+
 /**
- * Normalize Azure App Setting → absolute origin URL.
+ * Normalize Azure App Setting / .env → absolute origin URL.
  * Rejects truncated / relative values that cause "TypeError: Invalid URL".
  */
 function resolveBackendUrl(raw) {
@@ -42,7 +65,9 @@ function resolveBackendUrl(raw) {
     return null;
   }
 
-  if (!parsed.hostname.includes('.')) {
+  const host = parsed.hostname.toLowerCase();
+  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  if (!isLocal && !host.includes('.')) {
     console.error(
       `[proxy] BACKEND_URL hostname looks incomplete: ${parsed.hostname}. ` +
         'Check for a truncated value in Azure App Settings (must end with .azurewebsites.net).'
@@ -53,24 +78,17 @@ function resolveBackendUrl(raw) {
   return parsed.origin; // protocol + host (+ port if any)
 }
 
-// Fallback when Azure App Setting isn't visible to the Node process
-// (portal can show BACKEND_URL while process.env.BACKEND_URL is still empty).
-const DEFAULT_BACKEND_URL =
-  'https://theta-backend-a2d7g4ash4ddhmc3.canadacentral-01.azurewebsites.net';
-
+// Same var as Vite: BACKEND_URL (Azure App Setting overrides local .env)
 const RAW_BACKEND_URL =
   process.env.BACKEND_URL ||
   process.env.API_URL ||
   process.env.VITE_API_URL ||
-  DEFAULT_BACKEND_URL;
+  'http://localhost:5000';
 
 const BACKEND_ORIGIN = resolveBackendUrl(RAW_BACKEND_URL);
 
 if (BACKEND_ORIGIN) {
-  const fromEnv = Boolean(process.env.BACKEND_URL || process.env.API_URL || process.env.VITE_API_URL);
-  console.log(
-    `Proxying /api → ${BACKEND_ORIGIN}` + (fromEnv ? '' : ' (built-in default)')
-  );
+  console.log(`Proxying /api → ${BACKEND_ORIGIN}`);
 } else {
   console.warn(
     `[proxy] No valid backend URL (raw=${JSON.stringify(RAW_BACKEND_URL ?? null)}).`

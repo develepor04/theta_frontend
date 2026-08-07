@@ -76,7 +76,7 @@ const Sidebar = ({ isMobileMenuOpen, setIsMobileMenuOpen }) => {
           style={{ cursor: user?.company_name?.toLowerCase() !== 'descon' ? 'pointer' : 'default' }}
         >
           <Activity size={16} />
-          <span>PMO Command Center</span>
+          <span>Pulse Command Center</span>
         </div>
 
         {/* Tree children under Pulse Command Center */}

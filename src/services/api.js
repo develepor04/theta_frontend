@@ -319,6 +319,41 @@ export const historyService = {
   },
 };
 
+// ==================== THETA FILES (NSCC library — storage-backed) ====================
+
+export const thetaFileService = {
+  list: async () => {
+    const response = await api.get('/theta-files');
+    return response.data;
+  },
+
+  upload: async (file, onProgress) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post('/theta-files/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          onProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
+        }
+      },
+    });
+    return response.data;
+  },
+
+  downloadBlob: async (fileId) => {
+    const response = await api.get(`/theta-files/${fileId}/download`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
+  delete: async (fileId) => {
+    const response = await api.delete(`/theta-files/${fileId}`);
+    return response.data;
+  },
+};
+
 // ==================== STATS SERVICES ====================
 
 export const statsService = {

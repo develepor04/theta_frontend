@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import useStore from '../store/useStore';
-import { fileService, historyService, sheetService } from '../services/api';
+import { fileService, historyService, sheetService, thetaFileService } from '../services/api';
 import SCurveAnalytics from '../components/SCurveAnalytics';
 import ProcessingResultModal from '../components/ProcessingResultModal';
 import ExcelViewer from '../components/ExcelViewer';
@@ -144,6 +144,11 @@ const parseSheetWithHeaderDetection = (ws, name) => {
   return { name, headers, rows };
 };
 
+// Matches sidebar "Data Ingestion" active look (.nav-item.active)
+const INGEST_PRIMARY_BG = 'linear-gradient(135deg, #059669, #10b981, #34d399)';
+const INGEST_PRIMARY_SHADOW = '0 3px 10px rgba(16, 185, 129, 0.3)';
+const INGEST_PRIMARY_DISABLED = '#a7f3d0';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dashboard component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,12 +202,14 @@ const Dashboard = () => {
   const [showValidationReport, setShowValidationReport] = useState(false);
   const [validationReportErrors, setValidationReportErrors] = useState([]);
 
-  // ── Theta Sheets web browser (Browse Theta Sheets: pick a workbook already
-  // uploaded to the server from the job/upload history list, choose which
-  // sheet(s) inside it to load, edit in place) ──────────────────────────────
+  // ── Theta Sheets web browser (Browse Theta Sheets: pick from company file
+  // library in durable storage — local ThetaFiles/ or Azure Blob) ─────────
   const [showThetaBrowser, setShowThetaBrowser]       = useState(false);
   const [thetaBrowserStep, setThetaBrowserStep]       = useState('pickFile'); // 'pickFile' | 'pickSheets'
   const [thetaSourcePicking, setThetaSourcePicking]   = useState(false);
+  const [thetaLibraryFiles, setThetaLibraryFiles]     = useState([]);
+  const [isLoadingThetaLibrary, setIsLoadingThetaLibrary] = useState(false);
+  const [thetaLibraryUploading, setThetaLibraryUploading] = useState(false);
   const [thetaBrowserFileName, setThetaBrowserFileName] = useState('');
   const [thetaBrowserSheets, setThetaBrowserSheets]   = useState([]); // [{name, headers, rows}]
   const [thetaBrowserSelected, setThetaBrowserSelected] = useState([]); // sheet names
@@ -213,6 +220,7 @@ const Dashboard = () => {
   const [thetaJustSaved, setThetaJustSaved]           = useState(false);
   const [showThetaReports, setShowThetaReports]       = useState(false);
   const thetaLocalFileInputRef = useRef(null);
+  const thetaLibraryUploadRef = useRef(null);
 
   // ── OEM dropdown ──────────────────────────────────────────────────────────
   const [showOemMenu, setShowOemMenu]               = useState(false);
@@ -251,7 +259,7 @@ const Dashboard = () => {
   const [oneDriveToken, setOneDriveToken]           = useState(null);
   const [oneDriveSelectedItem, setOneDriveSelectedItem] = useState(null); // {id, name} of picked file
   const [isConnectingTheta, setIsConnectingTheta]   = useState(false);
-  const [oneDrivePickerSource, setOneDrivePickerSource] = useState('theta'); // 'theta' | 'configured'
+  const [oneDrivePickerSource, setOneDrivePickerSource] = useState('theta'); // 'theta' | 'catalog'
 
   const OEM_ENDPOINT_PLACEHOLDERS = {
     'Primavera':              'https://{instance}.oraclecloud.com/p6ws/restapi/project/{PROJECT_ID}/actions/invoke',
@@ -802,10 +810,21 @@ const Dashboard = () => {
     handleThetaConnect(null, f);
   };
 
-  // ── "Browse Theta Sheets" — pick a workbook already uploaded to the server
-  // (the existing job/upload history — same files shown in the Dashboard
-  // table below), choose which sheet(s) hold the schedule data, and edit
-  // inline before saving. No local-device file dialog involved.
+  // ── "Browse Theta Sheets" — pick from company file library (Blob / ThetaFiles)
+  const loadThetaLibraryFiles = useCallback(async () => {
+    setIsLoadingThetaLibrary(true);
+    try {
+      const data = await thetaFileService.list();
+      setThetaLibraryFiles(data.files || []);
+    } catch (err) {
+      console.error('Failed to load Theta file library', err);
+      toast.error('Could not load Theta Sheets file library.');
+      setThetaLibraryFiles([]);
+    } finally {
+      setIsLoadingThetaLibrary(false);
+    }
+  }, []);
+
   const openThetaBrowser = () => {
     setThetaBrowserStep('pickFile');
     setThetaBrowserSheets([]);
@@ -815,22 +834,34 @@ const Dashboard = () => {
     setShowThetaReports(false);
     setShowOemCatalog(false);
     setShowThetaBrowser(true);
-    // Refetch rather than trust whatever was last loaded into the store —
-    // `history` may be stale from an earlier page load and miss fields
-    // (e.g. raw_available) the server has since started returning.
-    loadHistory();
+    loadThetaLibraryFiles();
   };
 
-  const handleThetaBrowserPickFile = async (job) => {
+  const handleThetaLibraryUpload = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    setThetaLibraryUploading(true);
+    try {
+      await thetaFileService.upload(f);
+      toast.success(`${f.name} added to Theta Sheets library.`);
+      await loadThetaLibraryFiles();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Could not upload file to library.');
+    } finally {
+      setThetaLibraryUploading(false);
+    }
+  };
+
+  const handleThetaBrowserPickFile = async (fileEntry) => {
     setThetaSourcePicking(true);
     try {
-      const blob = await fileService.downloadRawBlob(job.id);
+      const blob = await thetaFileService.downloadBlob(fileEntry.id);
       const buf = await blob.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
       const sheets = wb.SheetNames.map(name => parseSheetWithHeaderDetection(wb.Sheets[name], name));
       setThetaBrowserSheets(sheets);
-      setThetaBrowserFileName(job.filename);
-      // Auto-suggest sheets that already look like schedule data.
+      setThetaBrowserFileName(fileEntry.filename);
       const suggested = sheets.filter(s => s.headers.includes('Activity ID') && s.headers.includes('Activity Name')).map(s => s.name);
       setThetaBrowserSelected(suggested);
       setThetaBrowserPreviewIdx(0);
@@ -951,7 +982,7 @@ const Dashboard = () => {
           style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, overflow: 'visible', position: 'relative' }}
         >
           <div>
-            <h1 style={{ margin: 0 }}>PMO Command Center</h1>
+            <h1 style={{ margin: 0 }}>Pulse Command Center</h1>
             <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748b' }}>
               Upload, process, and track project management Excel files
             </p>
@@ -987,7 +1018,7 @@ const Dashboard = () => {
               <button
                 type="button"
                 onClick={() => { setShowOemCatalog(true); setCatalogTab('custom'); setCatalogSearch(''); setCatalogSelected(null); setGetDataStep('catalog'); setLinkMode('link'); setLinkUrl(''); setOneDriveSelectedItem(null); }}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: '#15803d', color: '#fff', border: 'none', borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer', boxShadow: '0 2px 6px rgba(21,128,61,0.4)', whiteSpace: 'nowrap' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer', boxShadow: INGEST_PRIMARY_SHADOW, whiteSpace: 'nowrap' }}
               >
                 <Layers size={15} color="#fff" /> Get Data
               </button>
@@ -996,7 +1027,7 @@ const Dashboard = () => {
               <button
                 type="button"
                 onClick={() => setShowUploadModal(true)}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: '#15803d', color: '#fff', border: 'none', borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer', boxShadow: '0 2px 6px rgba(21,128,61,0.4)', whiteSpace: 'nowrap' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer', boxShadow: INGEST_PRIMARY_SHADOW, whiteSpace: 'nowrap' }}
               >
                 <Upload size={15} color="#fff" /> Upload
               </button>
@@ -1470,7 +1501,7 @@ const Dashboard = () => {
               </button>
               <button
                 onClick={handleTransformThetaSheet}
-                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 20px', background: '#0f766e', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 20px', background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer', boxShadow: INGEST_PRIMARY_SHADOW }}
               >
                 <TrendingUp size={14} /> Transform Data
               </button>
@@ -1527,7 +1558,7 @@ const Dashboard = () => {
             <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', flexShrink: 0 }}>
               <button
                 onClick={() => setShowValidationReport(false)}
-                style={{ padding: '8px 18px', background: '#0f766e', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+                style={{ padding: '8px 18px', background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer', boxShadow: INGEST_PRIMARY_SHADOW }}
               >
                 Fix and retry
               </button>
@@ -1959,17 +1990,27 @@ const Dashboard = () => {
           GET DATA WIZARD  — 3-step: Select source → Link to file → Configure
       ══════════════════════════════════════════════════════════════════════ */}
       {showOemCatalog && (() => {
-        const configuredTools = [
-          { name: 'OneDrive', description: 'Microsoft OneDrive is connected. Browse and link project files directly.', tag: 'Cloud Storage', connected: true, icon: '☁️' },
-        ];
-
-        const catalogTools = [
+        const baseCatalogTools = [
           { name: 'Primavera P6',           description: 'Securely access Oracle Primavera P6 to sync EPC schedule data.', tag: 'Remote MCP', icon: '🔶' },
           { name: 'MS Project Online',       description: 'Connect to Microsoft Project Online via Graph API.', tag: 'Remote MCP', icon: '📊' },
           { name: 'SAP PS',                  description: 'Integrate SAP Project System for WBS elements, milestones, and actuals in real time.', tag: 'Remote MCP', icon: '🔷' },
           { name: 'Oracle Database',         description: 'Oracle Database RDBMS for enterprise workloads.', tag: 'Custom', icon: '🔴' },
           { name: 'Azure SQL MCP',           description: 'Secure MCP server for SQL Server, Azure SQL, and SQL MI.', tag: 'Local MCP', icon: '🟦' },
           { name: 'Azure Databricks Genie',  description: 'Databricks Genie MCP — analyse data using natural language.', tag: 'Remote MCP', icon: '🔥' },
+        ];
+
+        const catalogTools = [
+          ...(isMsalConfigured() ? [{
+            name: 'OneDrive',
+            description: 'Microsoft OneDrive is connected. Browse and link project files directly.',
+            tag: 'Cloud Storage',
+            connected: true,
+            icon: '☁️',
+          }] : []),
+          ...baseCatalogTools.map(tool => ({
+            ...tool,
+            connected: connectedOems.includes(tool.name),
+          })),
         ];
 
         const filteredCatalog = catalogTools.filter(t =>
@@ -2019,9 +2060,8 @@ const Dashboard = () => {
               {getDataStep === 'catalog' && (
                 <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', margin: '16px 0 0', flexShrink: 0 }}>
                   {[
-                    { key: 'custom',     label: 'Theta Sheets' },
-                    { key: 'configured', label: 'Configured' },
-                    { key: 'catalog',    label: 'Catalog' },
+                    { key: 'custom',  label: 'Theta Sheets' },
+                    { key: 'catalog', label: 'Catalog' },
                   ].map(({ key, label }) => (
                     <button
                       key={key}
@@ -2036,57 +2076,6 @@ const Dashboard = () => {
 
               {/* Body */}
               <div style={{ flex: 1, overflowY: 'auto', padding: '20px 26px 26px' }}>
-
-                {/* ── STEP catalog / Configured tab ── */}
-                {getDataStep === 'catalog' && catalogTab === 'configured' && (
-                  <div>
-                    <p style={{ fontSize: 13, color: '#475569', margin: '0 0 18px' }}>
-                      These sources are ready to use with your existing authentication and configuration.
-                    </p>
-                    <div style={{ position: 'relative', marginBottom: 16 }}>
-                      <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}>🔍</span>
-                      <input type="text" placeholder="Search" value={catalogSearch} onChange={e => setCatalogSearch(e.target.value)}
-                        style={{ width: '100%', padding: '9px 12px 9px 34px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, color: '#0f172a', boxSizing: 'border-box' }} />
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 12 }}>
-                      {configuredTools
-                        .filter(t => t.name.toLowerCase().includes(catalogSearch.toLowerCase()) || t.description.toLowerCase().includes(catalogSearch.toLowerCase()))
-                        .map(tool => (
-                          <div key={tool.name} onClick={() => setCatalogSelected(tool.name)}
-                            style={{ border: `1.5px solid ${catalogSelected === tool.name ? '#7e22ce' : '#e2e8f0'}`, borderRadius: 10, padding: '14px 16px', cursor: 'pointer', background: catalogSelected === tool.name ? '#faf5ff' : '#fff', transition: 'border-color .15s, background .15s' }}
-                            onMouseEnter={e => { if (catalogSelected !== tool.name) e.currentTarget.style.borderColor = '#c4b5fd'; }}
-                            onMouseLeave={e => { if (catalogSelected !== tool.name) e.currentTarget.style.borderColor = '#e2e8f0'; }}
-                          >
-                            <div style={{ fontSize: 22, marginBottom: 8 }}>{tool.icon}</div>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 5 }}>{tool.name}</div>
-                            <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.4, marginBottom: 8 }}>{tool.description}</div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: 10.5, background: '#f1f5f9', color: '#475569', padding: '2px 7px', borderRadius: 5, fontWeight: 600 }}>{tool.tag}</span>
-                              {tool.connected && (
-                                <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10.5, color: '#16a34a', fontWeight: 600 }}>
-                                  <CheckCircle size={11} /> Connected
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-
-                    {/* Open OneDrive — shown when OneDrive card is selected */}
-                    {catalogSelected === 'OneDrive' && (
-                      <div style={{ marginTop: 20, padding: '16px 18px', background: '#eff6ff', border: '1.5px solid #bfdbfe', borderRadius: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#1d4ed8', marginBottom: 6 }}>☁️ OneDrive is connected</div>
-                        <div style={{ fontSize: 12, color: '#475569', marginBottom: 12 }}>Browse your OneDrive for Business storage and select a project schedule file to ingest.</div>
-                        <button
-                          onClick={() => { setOneDrivePickerSource('configured'); openOneDrivePicker(); }}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 18px', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-                        >
-                          ☁️ Open OneDrive
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 {/* ── STEP catalog / Catalog tab ── */}
                 {getDataStep === 'catalog' && catalogTab === 'catalog' && (
@@ -2112,9 +2101,15 @@ const Dashboard = () => {
                           <div style={{ fontSize: 22, marginBottom: 8 }}>{tool.icon}</div>
                           <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 5 }}>{tool.name}</div>
                           <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.4, marginBottom: 8 }}>{tool.description}</div>
-                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
                             <span style={{ fontSize: 10.5, background: '#f1f5f9', color: '#475569', padding: '2px 7px', borderRadius: 5, fontWeight: 600 }}>{tool.tag}</span>
-                            <span style={{ fontSize: 10.5, background: '#eff6ff', color: '#1d4ed8', padding: '2px 7px', borderRadius: 5, fontWeight: 600 }}>Preview</span>
+                            {tool.connected ? (
+                              <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10.5, color: '#16a34a', fontWeight: 600 }}>
+                                <CheckCircle size={11} /> Connected
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 10.5, background: '#eff6ff', color: '#1d4ed8', padding: '2px 7px', borderRadius: 5, fontWeight: 600 }}>Preview</span>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -2164,25 +2159,14 @@ const Dashboard = () => {
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <div style={{ width: 36, height: 36, borderRadius: 9, background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <FileSpreadsheet size={18} color="#16a34a" />
+                            <img src="/assets/theta_sheets_cloud_icon.png" alt="" style={{ width: 24, height: 24, objectFit: 'contain' }} />
                           </div>
                           <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Browse Theta Sheets</div>
                         </div>
                         <div style={{ fontSize: 12, color: '#15803d', lineHeight: 1.5 }}>
-                          Pick a workbook already uploaded to the server, choose which sheet(s) to load, then edit right there — changes feed the Project Intelligence Dashboard in real time.
+                          Pick a workbook from your company file library on Azure Blob, choose which sheet(s) to load, then edit inline — changes feed the Project Intelligence Dashboard in real time.
                         </div>
                       </div>
-                    </div>
-
-                    {/* Resume editing the current live sheet, if one already exists */}
-                    <div
-                      onClick={() => { setShowOemCatalog(false); openThetaEditor(); }}
-                      style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, padding: '10px 14px', borderRadius: 9, cursor: thetaEditorLoading ? 'default' : 'pointer', color: '#475569', fontSize: 12.5, fontWeight: 600 }}
-                    >
-                      {thetaEditorLoading
-                        ? <Loader2 size={15} className="spinning" />
-                        : <FileSpreadsheet size={15} />}
-                      Continue editing current Theta Sheet
                     </div>
                   </div>
                 )}
@@ -2351,28 +2335,30 @@ const Dashboard = () => {
                       onClick={() => {
                         if (!catalogSelected) return;
                         if (catalogSelected === 'OneDrive') {
-                          setOneDrivePickerSource('configured');
+                          setOneDrivePickerSource('catalog');
                           openOneDrivePicker();
+                        } else if (connectedOems.includes(catalogSelected)) {
+                          setGetDataStep('link');
                         } else {
                           openOemConnectModal(catalogSelected);
                         }
                       }}
-                      style={{ padding: '9px 22px', background: !catalogSelected ? '#d8b4fe' : '#7e22ce', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: !catalogSelected ? 'not-allowed' : 'pointer' }}>
-                      {catalogSelected === 'OneDrive' ? 'Connect →' : 'Next →'}
+                      style={{ padding: '9px 22px', background: !catalogSelected ? INGEST_PRIMARY_DISABLED : INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: !catalogSelected ? 'not-allowed' : 'pointer', boxShadow: !catalogSelected ? 'none' : INGEST_PRIMARY_SHADOW }}>
+                      {catalogSelected === 'OneDrive' ? 'Browse →' : 'Next →'}
                     </button>
                   )}
                   {getDataStep === 'link' && (
                     <button
                       disabled={linkMode === 'link' && !linkUrl.trim()}
                       onClick={() => { setGetDataStep('configure'); }}
-                      style={{ padding: '9px 22px', background: (linkMode === 'link' && !linkUrl.trim()) ? '#d8b4fe' : '#7e22ce', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: (linkMode === 'link' && !linkUrl.trim()) ? 'not-allowed' : 'pointer' }}>
+                      style={{ padding: '9px 22px', background: (linkMode === 'link' && !linkUrl.trim()) ? INGEST_PRIMARY_DISABLED : INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: (linkMode === 'link' && !linkUrl.trim()) ? 'not-allowed' : 'pointer', boxShadow: (linkMode === 'link' && !linkUrl.trim()) ? 'none' : INGEST_PRIMARY_SHADOW }}>
                       Next →
                     </button>
                   )}
                   {getDataStep === 'configure' && (
                     <button
                       onClick={() => { setShowOemCatalog(false); setShowProcessing(true); setProcessingDone(false); setTimeout(() => setProcessingDone(true), 3800); }}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 22px', background: '#0f766e', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 22px', background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer', boxShadow: INGEST_PRIMARY_SHADOW }}>
                       <TrendingUp size={15} /> Transform
                     </button>
                   )}
@@ -2388,13 +2374,17 @@ const Dashboard = () => {
           (Power Query "Choose data" style)
       ══════════════════════════════════════════════════════════════════════ */}
       {showThetaBrowser && (() => {
-        // Same list as the "File records" table on the Dashboard itself —
-        // no separate filtering/curation, so what you see here always
-        // matches what you see there.
-        const serverFiles = (history || []).filter(h => /\.(xlsx|xls|csv)$/i.test(h.filename || ''));
+        const serverFiles = (thetaLibraryFiles || []).filter(f => /\.(xlsx|xls|csv)$/i.test(f.filename || ''));
         const isSheetsStep = thetaBrowserStep === 'pickSheets';
         return (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1650, background: '#fff', display: 'flex', flexDirection: 'column' }}>
+            <input
+              ref={thetaLibraryUploadRef}
+              type="file"
+              accept=".xlsx,.xls,.csv,.xlsm"
+              onChange={handleThetaLibraryUpload}
+              style={{ display: 'none' }}
+            />
             <div
               style={{
                 background: '#fff', width: '100%', height: '100%',
@@ -2404,7 +2394,7 @@ const Dashboard = () => {
               {/* Header */}
               <div style={{ padding: '14px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fafbfc', flexShrink: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <FileSpreadsheet size={17} color="#16a34a" />
+                  <img src="/assets/theta_sheets_cloud_icon.png" alt="" style={{ width: 20, height: 20, objectFit: 'contain' }} />
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
                     {isSheetsStep ? (thetaBrowserFileName || 'Choose data') : 'Browse Theta Sheets'}
                   </span>
@@ -2415,17 +2405,40 @@ const Dashboard = () => {
               </div>
 
               {thetaBrowserStep === 'pickFile' ? (
-                /* ── Step 1: pick a workbook already uploaded to the server ── */
+                /* ── Step 1: pick a workbook from the Theta file library ── */
                 <div style={{ flex: 1, overflowY: 'auto' }}>
-                  {serverFiles.length === 0 ? (
+                  <div style={{ padding: '12px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <span style={{ fontSize: 12, color: '#64748b' }}>Company file library (Azure Blob)</span>
+                    <button
+                      type="button"
+                      disabled={thetaLibraryUploading}
+                      onClick={() => thetaLibraryUploadRef.current?.click()}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px',
+                        background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8,
+                        fontSize: 12, fontWeight: 600, cursor: thetaLibraryUploading ? 'default' : 'pointer',
+                        opacity: thetaLibraryUploading ? 0.7 : 1,
+                        boxShadow: INGEST_PRIMARY_SHADOW,
+                      }}
+                    >
+                      {thetaLibraryUploading ? <Loader2 size={13} className="spinning" /> : <Upload size={13} />}
+                      Upload to library
+                    </button>
+                  </div>
+                  {isLoadingThetaLibrary ? (
                     <div style={{ textAlign: 'center', padding: '52px 0', color: '#94a3b8', fontSize: 13 }}>
-                      No Excel files have been uploaded to this workspace yet. Use "Browse local files" to upload one first.
+                      <Loader2 size={20} className="spinning" style={{ margin: '0 auto 8px' }} />
+                      Loading files…
+                    </div>
+                  ) : serverFiles.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '52px 20px', color: '#94a3b8', fontSize: 13 }}>
+                      No Excel files in your Theta library yet. Click <strong>Upload to library</strong> to add one.
                     </div>
                   ) : (
-                    serverFiles.map(job => (
+                    serverFiles.map(fileEntry => (
                       <div
-                        key={job.id}
-                        onClick={() => !thetaSourcePicking && handleThetaBrowserPickFile(job)}
+                        key={fileEntry.id}
+                        onClick={() => !thetaSourcePicking && handleThetaBrowserPickFile(fileEntry)}
                         style={{
                           display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px',
                           cursor: thetaSourcePicking ? 'default' : 'pointer',
@@ -2435,13 +2448,13 @@ const Dashboard = () => {
                         onMouseEnter={e => { e.currentTarget.style.background = '#f8fafc'; }}
                         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                       >
-                        <span style={{ fontSize: 18, flexShrink: 0 }}>📊</span>
+                        <img src="/assets/Theta_sheets_icon.png" alt="" style={{ width: 22, height: 22, objectFit: 'contain', flexShrink: 0, borderRadius: 4 }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {job.filename}
+                            {fileEntry.filename}
                           </div>
                         </div>
-                        <span style={{ fontSize: 11.5, color: '#94a3b8', flexShrink: 0 }}>{formatDate(job.processed_at)}</span>
+                        <span style={{ fontSize: 11.5, color: '#94a3b8', flexShrink: 0 }}>{formatDate(fileEntry.modified_at)}</span>
                         {thetaSourcePicking && <Loader2 size={14} className="spinning" color="#94a3b8" />}
                       </div>
                     ))
@@ -2533,8 +2546,8 @@ const Dashboard = () => {
                       onClick={handleViewThetaReports}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 6, padding: '7px 18px',
-                        background: '#7e22ce', color: '#fff', border: 'none', borderRadius: 8,
-                        fontWeight: 600, fontSize: 12.5, cursor: 'pointer',
+                        background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8,
+                        fontWeight: 600, fontSize: 12.5, cursor: 'pointer', boxShadow: INGEST_PRIMARY_SHADOW,
                       }}
                     >
                       <BarChart2 size={13} /> View Reports
@@ -2545,9 +2558,10 @@ const Dashboard = () => {
                       onClick={handleThetaBrowserTransform}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 6, padding: '7px 18px',
-                        background: thetaBrowserSelected.length === 0 || thetaEditorLoading ? '#93c5fd' : '#0f766e',
+                        background: thetaBrowserSelected.length === 0 || thetaEditorLoading ? INGEST_PRIMARY_DISABLED : INGEST_PRIMARY_BG,
                         color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 12.5,
                         cursor: thetaBrowserSelected.length === 0 || thetaEditorLoading ? 'not-allowed' : 'pointer',
+                        boxShadow: thetaBrowserSelected.length === 0 || thetaEditorLoading ? 'none' : INGEST_PRIMARY_SHADOW,
                       }}
                     >
                       {thetaEditorLoading ? <><Loader2 size={13} className="spinning" /> Saving…</> : <><TrendingUp size={13} /> Save</>}
@@ -2777,9 +2791,10 @@ const Dashboard = () => {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8,
                   padding: '9px 18px',
-                  background: (!isOemFormValid || isConnectingOem) ? '#d8b4fe' : '#7e22ce',
+                  background: (!isOemFormValid || isConnectingOem) ? INGEST_PRIMARY_DISABLED : INGEST_PRIMARY_BG,
                   color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13,
                   cursor: (!isOemFormValid || isConnectingOem) ? 'not-allowed' : 'pointer',
+                  boxShadow: (!isOemFormValid || isConnectingOem) ? 'none' : INGEST_PRIMARY_SHADOW,
                 }}
               >
                 {isConnectingOem ? <><Loader2 size={15} className="spinning" /> Connecting…</> : 'Connect'}
@@ -2803,7 +2818,7 @@ const Dashboard = () => {
                   Pulling data from your source and running all 13 trackers. This usually takes a few seconds.
                 </p>
                 <div style={{ background: '#f1f5f9', borderRadius: 100, height: 6, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: '65%', background: 'linear-gradient(90deg, #7e22ce, #0f766e)', borderRadius: 100 }} />
+                  <div style={{ height: '100%', width: '65%', background: 'linear-gradient(90deg, #059669, #10b981, #34d399)', borderRadius: 100 }} />
                 </div>
               </>
             ) : (
@@ -2817,7 +2832,7 @@ const Dashboard = () => {
                 </p>
                 <button
                   onClick={() => { setShowProcessing(false); setProcessingDone(false); navigate('/reports'); }}
-                  style={{ width: '100%', padding: '13px 0', background: '#0073ea', color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 }}
+                  style={{ width: '100%', padding: '13px 0', background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10, boxShadow: INGEST_PRIMARY_SHADOW }}
                 >
                   View Reports →
                 </button>
@@ -2892,7 +2907,7 @@ const Dashboard = () => {
                           setLinkUrl(item.webUrl);
                           setOneDriveSelectedItem({ id: item.id, name: item.name });
                           setShowOneDrivePicker(false);
-                          if (oneDrivePickerSource === 'configured') {
+                          if (oneDrivePickerSource === 'catalog') {
                             setOneDrivePickerSource('theta');
                             setShowOemCatalog(false);
                             handleThetaConnect({ id: item.id, name: item.name });

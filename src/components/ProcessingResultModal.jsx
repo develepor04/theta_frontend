@@ -222,7 +222,7 @@ const ProcessingResultModal = ({ result, onClose, onViewReports }) => {
           <button className="btn-secondary" onClick={onClose}>
             Close
           </button>
-          <button className="btn-secondary" onClick={() => { onClose(); onViewReports?.(); }}>
+          <button className="btn-primary" onClick={() => { onClose(); onViewReports?.(); }}>
             View Reports &amp; Analytics
           </button>
         </div>
