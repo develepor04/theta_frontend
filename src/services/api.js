@@ -348,6 +348,16 @@ export const thetaFileService = {
     return response.data;
   },
 
+  /** Overwrite an existing library workbook in place (same file id). */
+  replace: async (fileId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.put(`/theta-files/${fileId}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
   delete: async (fileId) => {
     const response = await api.delete(`/theta-files/${fileId}`);
     return response.data;

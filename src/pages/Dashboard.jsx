@@ -211,6 +211,7 @@ const Dashboard = () => {
   const [isLoadingThetaLibrary, setIsLoadingThetaLibrary] = useState(false);
   const [thetaLibraryUploading, setThetaLibraryUploading] = useState(false);
   const [thetaBrowserFileName, setThetaBrowserFileName] = useState('');
+  const [thetaBrowserFileId, setThetaBrowserFileId]     = useState(null); // library file id being edited
   const [thetaBrowserSheets, setThetaBrowserSheets]   = useState([]); // [{name, headers, rows}]
   const [thetaBrowserSelected, setThetaBrowserSelected] = useState([]); // sheet names
   const [thetaBrowserPreviewIdx, setThetaBrowserPreviewIdx] = useState(0);
@@ -830,6 +831,7 @@ const Dashboard = () => {
     setThetaBrowserSheets([]);
     setThetaBrowserSelected([]);
     setThetaBrowserFileName('');
+    setThetaBrowserFileId(null);
     setThetaJustSaved(false);
     setShowThetaReports(false);
     setShowOemCatalog(false);
@@ -862,6 +864,7 @@ const Dashboard = () => {
       const sheets = wb.SheetNames.map(name => parseSheetWithHeaderDetection(wb.Sheets[name], name));
       setThetaBrowserSheets(sheets);
       setThetaBrowserFileName(fileEntry.filename);
+      setThetaBrowserFileId(fileEntry.id);
       const suggested = sheets.filter(s => s.headers.includes('Activity ID') && s.headers.includes('Activity Name')).map(s => s.name);
       setThetaBrowserSelected(suggested);
       setThetaBrowserPreviewIdx(0);
@@ -879,12 +882,122 @@ const Dashboard = () => {
     setThetaJustSaved(false);
   };
 
+  const handleThetaSheetRenamed = ({ oldName, newName }) => {
+    const next = String(newName ?? '').trim();
+    const prev = String(oldName ?? '').trim();
+    if (!prev || !next || prev === next) return;
+    setThetaBrowserSheets(sheets => sheets.map(s => (s.name === prev ? { ...s, name: next } : s)));
+    setThetaBrowserSelected(selected => selected.map(n => (n === prev ? next : n)));
+    setThetaJustSaved(false);
+  };
+
+  const handleThetaSheetsChange = (sheets) => {
+    if (!Array.isArray(sheets)) return;
+    setThetaBrowserSheets(sheets);
+    setThetaBrowserSelected(prev => {
+      const names = new Set(sheets.map(s => s.name));
+      const kept = prev.filter(n => names.has(n));
+      return kept.length ? kept : sheets.map(s => s.name);
+    });
+    setThetaJustSaved(false);
+  };
+
+  const persistSelectedThetaSheets = async (liveSheets, selectedNames) => {
+    const selectedSheets = liveSheets.filter(s => selectedNames.includes(s.name));
+    if (selectedSheets.length === 0) {
+      toast.error('Select at least one sheet to keep in Theta Sheets.');
+      return false;
+    }
+    const withActivityCols = selectedSheets.find(s => s.headers.includes('Activity ID') && s.headers.includes('Activity Name'));
+    const baseHeaders = (withActivityCols || selectedSheets[0]).headers;
+    const mergedRows = [];
+    selectedSheets.forEach(s => {
+      const idxMap = baseHeaders.map(h => s.headers.indexOf(h));
+      s.rows.forEach(row => {
+        mergedRows.push(idxMap.map(i => (i >= 0 && i < row.length ? row[i] : '')));
+      });
+    });
+    const grid = { name: 'Theta Sheets', sheets: [{ name: 'Schedule', headers: baseHeaders, rows: mergedRows }] };
+    const validation = validateSheetGrid(grid);
+    if (!validation.isValid) {
+      setValidationReportErrors(validation.errors);
+      setShowValidationReport(true);
+      return false;
+    }
+
+    if (activeSheetId && activeSheetVersion != null) {
+      const saved = await sheetService.saveSheet(activeSheetId, grid, activeSheetVersion);
+      setActiveSheetVersion(saved.version);
+      setActiveSheetData(saved.data);
+      liveSheetGridRef.current = saved.data;
+    } else {
+      const saved = await sheetService.createActiveSheet('Theta Sheets', grid);
+      setActiveSheetId(saved.id);
+      setActiveSheetVersion(saved.version);
+      setActiveSheetData(saved.data);
+      liveSheetGridRef.current = saved.data;
+    }
+    return true;
+  };
+
+  const persistLibraryWorkbook = async (sheets) => {
+    if (!thetaBrowserFileId || !Array.isArray(sheets) || sheets.length === 0) return false;
+    const file = gridToXlsxFile(
+      { name: thetaBrowserFileName || 'Theta Sheets', sheets },
+      thetaBrowserFileName || 'Theta Sheets.xlsx',
+    );
+    await thetaFileService.replace(thetaBrowserFileId, file);
+    return true;
+  };
+
+  const handleThetaSheetDeleted = async (deletedName, remainingSheets) => {
+    const name = String(deletedName || '').trim();
+    if (!name) return;
+
+    // Prefer the editor's remaining-sheet snapshot so left list updates instantly.
+    const nextSheets = Array.isArray(remainingSheets)
+      ? remainingSheets.filter((s) => s?.name && s.name !== name)
+      : thetaBrowserSheets.filter((s) => s.name !== name);
+    const nextSelected = thetaBrowserSelected
+      .filter((n) => n !== name && nextSheets.some((s) => s.name === n));
+    const selectedNames = nextSelected.length
+      ? nextSelected
+      : nextSheets.map((s) => s.name);
+
+    setThetaBrowserSheets(nextSheets);
+    setThetaBrowserSelected(selectedNames);
+    setThetaBrowserPreviewIdx((idx) => Math.min(idx, Math.max(nextSheets.length - 1, 0)));
+
+    // Excel Online style: write workbook back to Theta cloud library immediately
+    // so reopening the file no longer shows the deleted subsheet.
+    if (nextSheets.length === 0) {
+      setThetaJustSaved(false);
+      return;
+    }
+    try {
+      setThetaEditorLoading(true);
+      await persistLibraryWorkbook(nextSheets);
+      // Also keep the active Theta Sheet (merged schedule) in sync when applicable.
+      if (selectedNames.length > 0) {
+        await persistSelectedThetaSheets(nextSheets, selectedNames);
+      }
+      setThetaJustSaved(true);
+      toast.success('Saved', { duration: 1500 });
+    } catch {
+      setThetaJustSaved(false);
+      toast.error('Could not autosave library file. Click Save to retry.');
+    } finally {
+      setThetaEditorLoading(false);
+    }
+  };
+
   const closeThetaBrowser = () => {
     setShowThetaBrowser(false);
     setThetaBrowserStep('pickFile');
     setThetaBrowserSheets([]);
     setThetaBrowserSelected([]);
     setThetaBrowserFileName('');
+    setThetaBrowserFileId(null);
     setThetaJustSaved(false);
   };
 
@@ -906,35 +1019,20 @@ const Dashboard = () => {
     // cache needed.
     const liveGrid = thetaBrowserEditorRef.current?.getGrid();
     const liveSheets = liveGrid?.sheets?.length ? liveGrid.sheets : thetaBrowserSheets;
-    const selectedSheets = liveSheets.filter(s => thetaBrowserSelected.includes(s.name));
-    const withActivityCols = selectedSheets.find(s => s.headers.includes('Activity ID') && s.headers.includes('Activity Name'));
-    const baseHeaders = (withActivityCols || selectedSheets[0]).headers;
-    const mergedRows = [];
-    selectedSheets.forEach(s => {
-      const idxMap = baseHeaders.map(h => s.headers.indexOf(h));
-      s.rows.forEach(row => {
-        mergedRows.push(idxMap.map(i => (i >= 0 && i < row.length ? row[i] : '')));
-      });
-    });
-    const grid = { name: 'Theta Sheets', sheets: [{ name: 'Schedule', headers: baseHeaders, rows: mergedRows }] };
-
-    const validation = validateSheetGrid(grid);
-    if (!validation.isValid) {
-      setValidationReportErrors(validation.errors);
-      setShowValidationReport(true);
-      return;
-    }
 
     setThetaEditorLoading(true);
     try {
-      const saved = await sheetService.createActiveSheet('Theta Sheets', grid);
-      setActiveSheetId(saved.id);
-      setActiveSheetVersion(saved.version);
-      setActiveSheetData(saved.data);
-      liveSheetGridRef.current = saved.data;
-      setThetaJustSaved(true);
-      toast.success('Theta Sheet saved.');
-    } catch (err) {
+      // Keep the company library workbook in sync so reopen reflects sheet
+      // deletes/renames/edits (not only the merged active Theta Sheet).
+      if (thetaBrowserFileId) {
+        await persistLibraryWorkbook(liveSheets);
+      }
+      const ok = await persistSelectedThetaSheets(liveSheets, thetaBrowserSelected);
+      if (ok) {
+        setThetaJustSaved(true);
+        toast.success('Theta Sheet saved.');
+      }
+    } catch {
       toast.error('Could not save the selected sheet(s). Please try again.');
     } finally {
       setThetaEditorLoading(false);
@@ -2152,7 +2250,7 @@ const Dashboard = () => {
                         </div>
                       </div>
 
-                      {/* Browse Theta Sheets — pick from files already uploaded to the server */}
+                      {/* Browse Theta Cloud — pick from files already uploaded to the server */}
                       <div
                         onClick={openThetaBrowser}
                         style={{ display: 'flex', flexDirection: 'column', gap: 10, border: '1.5px solid #86efac', borderRadius: 12, padding: '18px 16px', cursor: 'pointer', background: '#f0fdf4' }}
@@ -2161,7 +2259,7 @@ const Dashboard = () => {
                           <div style={{ width: 36, height: 36, borderRadius: 9, background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             <img src="/assets/theta_sheets_cloud_icon.png" alt="" style={{ width: 24, height: 24, objectFit: 'contain' }} />
                           </div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Browse Theta Sheets</div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Browse theta cloud</div>
                         </div>
                         <div style={{ fontSize: 12, color: '#15803d', lineHeight: 1.5 }}>
                           Pick a workbook from your company file library on Azure Blob, choose which sheet(s) to load, then edit inline — changes feed the Project Intelligence Dashboard in real time.
@@ -2283,7 +2381,7 @@ const Dashboard = () => {
                       Configure how data from <strong>{catalogSelected}</strong> will be ingested.
                     </p>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 22 }}>
-                      <span style={{ fontSize: 18 }}>📊</span>
+                      <img src="/assets/Theta_sheets_icon.png" alt="" style={{ width: 22, height: 22, objectFit: 'contain', flexShrink: 0, borderRadius: 4 }} />
                       <span style={{ fontSize: 13, color: '#1e293b', fontWeight: 500 }}>
                         {linkUrl || 'sample_project_file.xlsx'}
                       </span>
@@ -2391,12 +2489,16 @@ const Dashboard = () => {
                 display: 'flex', flexDirection: 'column', overflow: 'hidden',
               }}
             >
-              {/* Header */}
+              {/* Header — cloud for library browse; Theta Sheets icon once a file is open */}
               <div style={{ padding: '14px 20px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fafbfc', flexShrink: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <img src="/assets/theta_sheets_cloud_icon.png" alt="" style={{ width: 20, height: 20, objectFit: 'contain' }} />
+                  <img
+                    src={isSheetsStep ? '/assets/Theta_sheets_icon.png' : '/assets/theta_sheets_cloud_icon.png'}
+                    alt=""
+                    style={{ width: 20, height: 20, objectFit: 'contain' }}
+                  />
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
-                    {isSheetsStep ? (thetaBrowserFileName || 'Choose data') : 'Browse Theta Sheets'}
+                    {isSheetsStep ? (thetaBrowserFileName || 'Choose data') : 'Browse theta cloud'}
                   </span>
                 </div>
                 <button onClick={closeThetaBrowser} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', padding: 4 }}>
@@ -2414,15 +2516,15 @@ const Dashboard = () => {
                       disabled={thetaLibraryUploading}
                       onClick={() => thetaLibraryUploadRef.current?.click()}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px',
-                        background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8,
-                        fontSize: 12, fontWeight: 600, cursor: thetaLibraryUploading ? 'default' : 'pointer',
+                        display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px',
+                        background: INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 9,
+                        fontSize: 13, fontWeight: 600, cursor: thetaLibraryUploading ? 'default' : 'pointer',
                         opacity: thetaLibraryUploading ? 0.7 : 1,
-                        boxShadow: INGEST_PRIMARY_SHADOW,
+                        boxShadow: INGEST_PRIMARY_SHADOW, whiteSpace: 'nowrap',
                       }}
                     >
-                      {thetaLibraryUploading ? <Loader2 size={13} className="spinning" /> : <Upload size={13} />}
-                      Upload to library
+                      {thetaLibraryUploading ? <Loader2 size={15} className="spinning" /> : <Upload size={15} color="#fff" />}
+                      Upload
                     </button>
                   </div>
                   {isLoadingThetaLibrary ? (
@@ -2432,7 +2534,7 @@ const Dashboard = () => {
                     </div>
                   ) : serverFiles.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '52px 20px', color: '#94a3b8', fontSize: 13 }}>
-                      No Excel files in your Theta library yet. Click <strong>Upload to library</strong> to add one.
+                      No Excel files in your Theta library yet. Click <strong>Upload</strong> to add one.
                     </div>
                   ) : (
                     serverFiles.map(fileEntry => (
@@ -2524,6 +2626,9 @@ const Dashboard = () => {
                           initialData={{ name: thetaBrowserFileName || 'Theta Sheets', sheets: thetaBrowserSheets }}
                           hideToolbar
                           onDirty={() => setThetaJustSaved(false)}
+                          onSheetRenamed={handleThetaSheetRenamed}
+                          onSheetsChange={handleThetaSheetsChange}
+                          onSheetDeleted={handleThetaSheetDeleted}
                           height="100%"
                         />
                       </div>
