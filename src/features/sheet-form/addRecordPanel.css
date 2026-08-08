@@ -1,0 +1,140 @@
+.add-record-layout {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.add-record-layout__sheet {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.add-record-panel {
+  flex: 0 0 auto;
+  width: 0;
+  max-width: 800px;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  border-left: 0 solid #e5e5e5;
+  background: #fff;
+  transition:
+    width 220ms ease,
+    min-width 220ms ease,
+    border-left-width 220ms ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.add-record-panel--open {
+  width: 360px;
+  min-width: 280px;
+  border-left-width: 1px;
+}
+
+.add-record-panel__inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 280px;
+  width: 360px;
+  max-width: 100%;
+}
+
+.add-record-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e5e5;
+  flex-shrink: 0;
+}
+
+.add-record-panel__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e1e1e;
+  line-height: 1.3;
+}
+
+.add-record-panel__close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #6b6b6b;
+  font-size: 20px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.add-record-panel__close:hover {
+  background: #f5f5f5;
+  color: #1e1e1e;
+}
+
+.add-record-panel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.add-record-panel__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #e5e5e5;
+  flex-shrink: 0;
+}
+
+.add-record-field {
+  margin-bottom: 14px;
+}
+
+.add-record-field__label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #3f3f3f;
+  margin-bottom: 6px;
+}
+
+.add-record-field__required {
+  color: #ef4444;
+  margin-left: 2px;
+}
+
+.add-record-field__static {
+  font-size: 13px;
+  color: #1e1e1e;
+  padding: 6px 0;
+  min-height: 20px;
+}
+
+.add-record-field__error {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #ef4444;
+}
+
+.add-record-empty {
+  font-size: 13px;
+  color: #6b6b6b;
+}

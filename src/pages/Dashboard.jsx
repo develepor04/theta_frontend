@@ -34,7 +34,12 @@ import Sidebar from '../components/Sidebar';
 import SpreadsheetEditor from '../components/SpreadsheetEditor';
 import ThetaReportView from '../components/ThetaReportView';
 import { blankGrid } from '../utils/sheetDataUtils';
-import { validateSheetGrid } from '../utils/thetaValidation';
+import {
+  validateSheetGrid,
+  hasScheduleHeaders,
+  canonicalizeScheduleHeaders,
+  resolveScheduleHeaders,
+} from '../utils/thetaValidation';
 import useIsMobile from '../hooks/useIsMobile';
 import { getMsalInstance, isMsalConfigured } from '../services/msalConfig';
 import './Dashboard.css';
@@ -210,6 +215,7 @@ const Dashboard = () => {
   const [thetaLibraryFiles, setThetaLibraryFiles]     = useState([]);
   const [isLoadingThetaLibrary, setIsLoadingThetaLibrary] = useState(false);
   const [thetaLibraryUploading, setThetaLibraryUploading] = useState(false);
+  const [thetaLibraryDeletingId, setThetaLibraryDeletingId] = useState(null);
   const [thetaBrowserFileName, setThetaBrowserFileName] = useState('');
   const [thetaBrowserFileId, setThetaBrowserFileId]     = useState(null); // library file id being edited
   const [thetaBrowserSheets, setThetaBrowserSheets]   = useState([]); // [{name, headers, rows}]
@@ -788,7 +794,15 @@ const Dashboard = () => {
     // Pull the live grid straight from Univer's current state rather than
     // liveSheetGridRef, which only updates on the debounced auto-save and
     // can lag behind whatever the user just typed.
-    const grid = spreadsheetEditorRef.current?.getGrid() ?? liveSheetGridRef.current;
+    const rawGrid = spreadsheetEditorRef.current?.getGrid() ?? liveSheetGridRef.current;
+    // Put the schedule sheet first so transform/metrics always see Activity ID/Name.
+    const sheets = [...(rawGrid?.sheets || [])];
+    const scheduleIdx = sheets.findIndex((s) => hasScheduleHeaders(s.headers));
+    if (scheduleIdx > 0) {
+      const [schedule] = sheets.splice(scheduleIdx, 1);
+      sheets.unshift(schedule);
+    }
+    const grid = { ...(rawGrid || {}), sheets };
     const validation = validateSheetGrid(grid);
     if (!validation.isValid) {
       setValidationReportErrors(validation.errors);
@@ -855,6 +869,25 @@ const Dashboard = () => {
     }
   };
 
+  const handleThetaLibraryDelete = async (fileEntry, e) => {
+    e?.stopPropagation?.();
+    if (!fileEntry?.id || thetaLibraryDeletingId || thetaSourcePicking) return;
+    const name = fileEntry.filename || 'this file';
+    if (!window.confirm(`Delete "${name}" from the company file library? This cannot be undone.`)) {
+      return;
+    }
+    setThetaLibraryDeletingId(fileEntry.id);
+    try {
+      await thetaFileService.delete(fileEntry.id);
+      setThetaLibraryFiles((prev) => (prev || []).filter((f) => f.id !== fileEntry.id));
+      toast.success(`${name} deleted.`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not delete file.');
+    } finally {
+      setThetaLibraryDeletingId(null);
+    }
+  };
+
   const handleThetaBrowserPickFile = async (fileEntry) => {
     setThetaSourcePicking(true);
     try {
@@ -865,7 +898,7 @@ const Dashboard = () => {
       setThetaBrowserSheets(sheets);
       setThetaBrowserFileName(fileEntry.filename);
       setThetaBrowserFileId(fileEntry.id);
-      const suggested = sheets.filter(s => s.headers.includes('Activity ID') && s.headers.includes('Activity Name')).map(s => s.name);
+      const suggested = sheets.filter(s => hasScheduleHeaders(s.headers)).map(s => s.name);
       setThetaBrowserSelected(suggested);
       setThetaBrowserPreviewIdx(0);
       setThetaBrowserStep('pickSheets');
@@ -902,17 +935,31 @@ const Dashboard = () => {
     setThetaJustSaved(false);
   };
 
-  const persistSelectedThetaSheets = async (liveSheets, selectedNames) => {
+  const persistSelectedThetaSheets = async (liveSheets, selectedNames, { showValidationErrors = true } = {}) => {
     const selectedSheets = liveSheets.filter(s => selectedNames.includes(s.name));
     if (selectedSheets.length === 0) {
-      toast.error('Select at least one sheet to keep in Theta Sheets.');
+      if (showValidationErrors) toast.error('Select at least one sheet to keep in Theta Sheets.');
       return false;
     }
-    const withActivityCols = selectedSheets.find(s => s.headers.includes('Activity ID') && s.headers.includes('Activity Name'));
-    const baseHeaders = (withActivityCols || selectedSheets[0]).headers;
+    const withActivityCols = selectedSheets.find(s => hasScheduleHeaders(s.headers)) || selectedSheets[0];
+    // Canonicalize ID → Activity ID etc. so the active Theta Sheet keeps a
+    // stable schema. Library workbook headers are left untouched.
+    const baseHeaders = canonicalizeScheduleHeaders(withActivityCols.headers || []);
     const mergedRows = [];
     selectedSheets.forEach(s => {
-      const idxMap = baseHeaders.map(h => s.headers.indexOf(h));
+      const srcHeaders = s.headers || [];
+      const srcResolved = resolveScheduleHeaders(srcHeaders);
+      const idxMap = baseHeaders.map((canonical) => {
+        if (canonical === 'Activity ID') {
+          const alias = srcResolved.activityId;
+          return alias != null ? srcHeaders.indexOf(alias) : srcHeaders.indexOf(canonical);
+        }
+        if (canonical === 'Activity Name') {
+          const alias = srcResolved.activityName;
+          return alias != null ? srcHeaders.indexOf(alias) : srcHeaders.indexOf(canonical);
+        }
+        return srcHeaders.indexOf(canonical);
+      });
       s.rows.forEach(row => {
         mergedRows.push(idxMap.map(i => (i >= 0 && i < row.length ? row[i] : '')));
       });
@@ -920,8 +967,10 @@ const Dashboard = () => {
     const grid = { name: 'Theta Sheets', sheets: [{ name: 'Schedule', headers: baseHeaders, rows: mergedRows }] };
     const validation = validateSheetGrid(grid);
     if (!validation.isValid) {
-      setValidationReportErrors(validation.errors);
-      setShowValidationReport(true);
+      if (showValidationErrors) {
+        setValidationReportErrors(validation.errors);
+        setShowValidationReport(true);
+      }
       return false;
     }
 
@@ -976,10 +1025,15 @@ const Dashboard = () => {
     }
     try {
       setThetaEditorLoading(true);
+      // Subsheet delete must always rewrite the library workbook. Schedule-column
+      // validation belongs to Save/Transform — not delete — so Cost/etc. tabs
+      // can be removed without the "Missing Activity ID" modal.
       await persistLibraryWorkbook(nextSheets);
-      // Also keep the active Theta Sheet (merged schedule) in sync when applicable.
-      if (selectedNames.length > 0) {
-        await persistSelectedThetaSheets(nextSheets, selectedNames);
+      const hasScheduleSheet = nextSheets.some((s) => (
+        selectedNames.includes(s.name) && hasScheduleHeaders(s.headers)
+      ));
+      if (hasScheduleSheet && selectedNames.length > 0) {
+        await persistSelectedThetaSheets(nextSheets, selectedNames, { showValidationErrors: false });
       }
       setThetaJustSaved(true);
       toast.success('Saved', { duration: 1500 });
@@ -1024,13 +1078,22 @@ const Dashboard = () => {
     try {
       // Keep the company library workbook in sync so reopen reflects sheet
       // deletes/renames/edits (not only the merged active Theta Sheet).
+      let librarySaved = false;
       if (thetaBrowserFileId) {
         await persistLibraryWorkbook(liveSheets);
+        librarySaved = true;
       }
-      const ok = await persistSelectedThetaSheets(liveSheets, thetaBrowserSelected);
+      // Schedule-column modal is for active-sheet sync only. Never block the
+      // library Save UX with it when the workbook was already written.
+      const ok = await persistSelectedThetaSheets(liveSheets, thetaBrowserSelected, {
+        showValidationErrors: !librarySaved,
+      });
       if (ok) {
         setThetaJustSaved(true);
         toast.success('Theta Sheet saved.');
+      } else if (librarySaved) {
+        setThetaJustSaved(true);
+        toast.success('Library file saved.');
       }
     } catch {
       toast.error('Could not save the selected sheet(s). Please try again.');
@@ -2537,29 +2600,64 @@ const Dashboard = () => {
                       No Excel files in your Theta library yet. Click <strong>Upload</strong> to add one.
                     </div>
                   ) : (
-                    serverFiles.map(fileEntry => (
-                      <div
-                        key={fileEntry.id}
-                        onClick={() => !thetaSourcePicking && handleThetaBrowserPickFile(fileEntry)}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px',
-                          cursor: thetaSourcePicking ? 'default' : 'pointer',
-                          opacity: thetaSourcePicking ? 0.6 : 1,
-                          borderBottom: '1px solid #f8fafc',
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.background = '#f8fafc'; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                      >
-                        <img src="/assets/Theta_sheets_icon.png" alt="" style={{ width: 22, height: 22, objectFit: 'contain', flexShrink: 0, borderRadius: 4 }} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {fileEntry.filename}
+                    <div style={{ position: 'relative', minHeight: 160 }}>
+                      {serverFiles.map(fileEntry => {
+                        const isDeleting = thetaLibraryDeletingId === fileEntry.id;
+                        return (
+                          <div
+                            key={fileEntry.id}
+                            onClick={() => !thetaSourcePicking && !isDeleting && handleThetaBrowserPickFile(fileEntry)}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px',
+                              cursor: thetaSourcePicking || isDeleting ? 'default' : 'pointer',
+                              borderBottom: '1px solid #f8fafc',
+                              opacity: isDeleting ? 0.65 : 1,
+                            }}
+                            onMouseEnter={e => { if (!thetaSourcePicking && !isDeleting) e.currentTarget.style.background = '#f8fafc'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <img src="/assets/Theta_sheets_icon.png" alt="" style={{ width: 22, height: 22, objectFit: 'contain', flexShrink: 0, borderRadius: 4 }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {fileEntry.filename}
+                              </div>
+                            </div>
+                            <span style={{ fontSize: 11.5, color: '#94a3b8', flexShrink: 0 }}>{formatDate(fileEntry.modified_at)}</span>
+                            <button
+                              type="button"
+                              title="Delete file"
+                              aria-label={`Delete ${fileEntry.filename || 'file'}`}
+                              disabled={isDeleting || thetaSourcePicking || Boolean(thetaLibraryDeletingId)}
+                              onClick={(ev) => handleThetaLibraryDelete(fileEntry, ev)}
+                              style={{
+                                flexShrink: 0,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: 30,
+                                height: 30,
+                                borderRadius: 7,
+                                border: '1px solid #fee2e2',
+                                background: '#fff',
+                                color: '#dc2626',
+                                cursor: isDeleting || thetaSourcePicking ? 'default' : 'pointer',
+                                padding: 0,
+                              }}
+                            >
+                              {isDeleting ? <Loader2 size={14} className="spinning" /> : <Trash2 size={14} />}
+                            </button>
                           </div>
+                        );
+                      })}
+                      {thetaSourcePicking && (
+                        <div className="theta-file-picking-overlay" aria-live="polite" aria-busy="true">
+                          <div className="theta-file-picking-track">
+                            <div className="theta-file-picking-fill" />
+                          </div>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: '#047857' }}>Opening file…</span>
                         </div>
-                        <span style={{ fontSize: 11.5, color: '#94a3b8', flexShrink: 0 }}>{formatDate(fileEntry.modified_at)}</span>
-                        {thetaSourcePicking && <Loader2 size={14} className="spinning" color="#94a3b8" />}
-                      </div>
-                    ))
+                      )}
+                    </div>
                   )}
                 </div>
               ) : (
@@ -2601,7 +2699,7 @@ const Dashboard = () => {
                           style={{ accentColor: '#16a34a', cursor: 'pointer', flexShrink: 0 }}
                         />
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
-                        {s.headers.includes('Activity ID') && s.headers.includes('Activity Name') && (
+                        {hasScheduleHeaders(s.headers) && (
                           <CheckCircle size={12} color="#16a34a" style={{ flexShrink: 0, marginLeft: 'auto' }} />
                         )}
                       </div>

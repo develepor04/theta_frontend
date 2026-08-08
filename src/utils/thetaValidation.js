@@ -20,6 +20,56 @@ export const THETA_NUMERIC_FIELDS = [
   'Actual Output', 'Productivity Index',
 ];
 
+// Frontend-only header aliases for Save/validation. Workbooks often use "ID"
+// instead of "Activity ID". Process-engine matching is separate and untouched.
+export const ACTIVITY_ID_ALIASES = [
+  'Activity ID', 'ActivityID', 'Activity Code', 'Activity_ID', 'WBS Code', 'ID',
+];
+export const ACTIVITY_NAME_ALIASES = [
+  'Activity Name', 'ActivityName', 'Activity_Name', 'WBS / Activity Name',
+];
+
+export function findHeaderAlias(headers, aliases) {
+  const list = (headers || []).map((h) => String(h ?? '').trim()).filter(Boolean);
+  const lowerMap = new Map(list.map((h) => [h.toLowerCase(), h]));
+  for (const alias of aliases) {
+    const hit = lowerMap.get(String(alias).toLowerCase());
+    if (hit !== undefined) return hit;
+  }
+  return null;
+}
+
+export function resolveScheduleHeaders(headers) {
+  return {
+    activityId: findHeaderAlias(headers, ACTIVITY_ID_ALIASES),
+    activityName: findHeaderAlias(headers, ACTIVITY_NAME_ALIASES),
+  };
+}
+
+export function hasScheduleHeaders(headers) {
+  const { activityId, activityName } = resolveScheduleHeaders(headers);
+  return Boolean(activityId && activityName);
+}
+
+export function missingScheduleColumns(headers) {
+  const { activityId, activityName } = resolveScheduleHeaders(headers);
+  const missing = [];
+  if (!activityId) missing.push('Activity ID');
+  if (!activityName) missing.push('Activity Name');
+  return missing;
+}
+
+/** Rename known aliases to canonical Activity ID / Activity Name labels. */
+export function canonicalizeScheduleHeaders(headers) {
+  const { activityId, activityName } = resolveScheduleHeaders(headers);
+  return (headers || []).map((h) => {
+    const t = String(h ?? '').trim();
+    if (activityId && t === activityId) return 'Activity ID';
+    if (activityName && t === activityName) return 'Activity Name';
+    return t;
+  });
+}
+
 export const isValidDateValue = (v) => {
   if (v === undefined || v === null) return false;
   // Excel often stores dates as raw serial numbers (e.g. 46588) rather than
@@ -52,15 +102,21 @@ export const isValidNumericValue = (v) => {
 // `row` is 1-indexed matching the sheet's own row numbers (header = row 1),
 // and is `null` for sheet-level errors (missing columns, no rows at all).
 export function validateSheetGrid(gridData) {
-  const sheet = gridData?.sheets?.[0];
-  if (!sheet) {
+  const sheets = gridData?.sheets || [];
+  if (!sheets.length) {
     return { errors: [{ row: null, field: null, value: null, reason: 'No sheet data found.' }], errorCount: 1, isValid: false };
   }
 
+  // Prefer a sheet that actually carries the schedule schema. Multi-tab
+  // workbooks often put a summary/cost sheet first; validating sheets[0]
+  // alone then falsely reports missing Activity ID / Activity Name.
+  const sheet = sheets.find((s) => hasScheduleHeaders(s.headers)) || sheets[0];
+
   const headers = (sheet.headers || []).map(h => String(h).trim());
   const rows = sheet.rows || [];
+  const resolved = resolveScheduleHeaders(headers);
 
-  const missingCols = THETA_REQUIRED_COLUMNS.filter(c => !headers.includes(c));
+  const missingCols = missingScheduleColumns(headers);
   if (missingCols.length > 0) {
     return {
       errors: [{ row: null, field: null, value: null, reason: `Missing required columns: ${missingCols.join(', ')}` }],
@@ -76,6 +132,8 @@ export function validateSheetGrid(gridData) {
 
   const colIdx = {};
   headers.forEach((h, i) => { colIdx[h] = i; });
+  const activityIdIdx = colIdx[resolved.activityId];
+  const activityNameIdx = colIdx[resolved.activityName];
 
   const errors = [];
   let realActivityRows = 0;
@@ -83,8 +141,8 @@ export function validateSheetGrid(gridData) {
     const row = rows[r];
     const rowNum = r + 2; // header is row 1, rows are 1-indexed for the user
 
-    const activityId = String(row[colIdx['Activity ID']] ?? '').trim();
-    const activityName = String(row[colIdx['Activity Name']] ?? '').trim();
+    const activityId = String(row[activityIdIdx] ?? '').trim();
+    const activityName = String(row[activityNameIdx] ?? '').trim();
     if (!activityId || !activityName) continue;
     realActivityRows += 1;
 

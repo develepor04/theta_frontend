@@ -1450,6 +1450,42 @@
   transition: width 0.5s ease;
 }
 
+/* Indeterminate green bar — Theta library file open */
+.theta-file-picking-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(1px);
+  pointer-events: all;
+}
+
+.theta-file-picking-track {
+  width: min(220px, 56%);
+  height: 8px;
+  background: rgba(16, 185, 129, 0.18);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.theta-file-picking-fill {
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #059669, #10b981, #34d399);
+  animation: thetaFilePickingSlide 1.1s ease-in-out infinite;
+}
+
+@keyframes thetaFilePickingSlide {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
 .live-current-tracker {
   font-size: 0.82rem;
   color: #047857;

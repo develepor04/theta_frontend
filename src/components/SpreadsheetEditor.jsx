@@ -5,10 +5,23 @@ import * as XLSX from 'xlsx';
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import UniverPresetSheetsCoreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
+import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
+import UniverPresetSheetsDataValidationEnUS from '@univerjs/preset-sheets-data-validation/locales/en-US';
 import '@univerjs/preset-sheets-core/lib/index.css';
+import '@univerjs/design/lib/index.css';
 import { sheetService } from '../services/api';
-import { toUniverWorkbookData, fromUniverWorkbookData, blankGrid } from '../utils/sheetDataUtils';
+import {
+  toUniverWorkbookData,
+  extractGridFromUniverWorkbook,
+  gridHasRequiredHeaders,
+  blankGrid,
+} from '../utils/sheetDataUtils';
 import { validateSheetGrid } from '../utils/thetaValidation';
+import {
+  AddRecordButton,
+  AddRecordPanel,
+  useFormConfig,
+} from '../features/sheet-form';
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -52,11 +65,18 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const [localData, setLocalData] = useState(() => initialData || blankGrid());
   // Excel-style sheet-tab context menu (portaled above Theta overlays)
   const [sheetMenu, setSheetMenu] = useState(null); // { x, y, sheetId, sheetName, canDelete }
+  const [univerAPI, setUniverAPI] = useState(null);
+  const [addRecordOpen, setAddRecordOpen] = useState(false);
+  const [activeSheetName, setActiveSheetName] = useState('');
+  const formConfig = useFormConfig(
+    univerAPI,
+    activeSheetName ? { sheetName: activeSheetName } : null,
+  );
 
   const syncSheetsToParent = () => {
     const workbook = univerAPIRef.current?.getActiveWorkbook();
     if (!workbook) return;
-    const grid = fromUniverWorkbookData(workbook.save());
+    const grid = extractGridFromUniverWorkbook(workbook, localData?.name || 'Theta Sheets');
     onSheetsChange?.(grid.sheets || []);
   };
 
@@ -64,7 +84,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     getGrid: () => {
       const workbook = univerAPIRef.current?.getActiveWorkbook();
       if (!workbook) return null;
-      return fromUniverWorkbookData(workbook.save());
+      return extractGridFromUniverWorkbook(workbook, localData?.name || 'Theta Sheets');
     },
     setActiveSheetByName: (name) => {
       const workbook = univerAPIRef.current?.getActiveWorkbook();
@@ -109,25 +129,39 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     mountEl.style.width = '100%';
     containerRef.current.appendChild(mountEl);
 
-    const { univer, univerAPI } = createUniver({
+    const { univer, univerAPI: api } = createUniver({
       locale: LocaleType.EN_US,
       locales: {
-        [LocaleType.EN_US]: mergeLocales(UniverPresetSheetsCoreEnUS),
+        [LocaleType.EN_US]: mergeLocales(
+          UniverPresetSheetsCoreEnUS,
+          UniverPresetSheetsDataValidationEnUS,
+        ),
       },
       presets: [
         UniverSheetsCorePreset({ container: mountEl }),
+        UniverSheetsDataValidationPreset(),
       ],
     });
     univerRef.current = univer;
-    univerAPIRef.current = univerAPI;
+    univerAPIRef.current = api;
+    setUniverAPI(api);
 
     const workbookData = toUniverWorkbookData(localData);
-    univerAPI.createWorkbook(workbookData);
+    api.createWorkbook(workbookData);
+    setActiveSheetName(api.getActiveWorkbook()?.getActiveSheet?.()?.getSheetName?.() || '');
 
-    changeDisposableRef.current = univerAPI.addEvent(univerAPI.Event.SheetValueChanged, () => {
+    const syncActiveSheetName = () => {
+      const name = api.getActiveWorkbook()?.getActiveSheet?.()?.getSheetName?.() || '';
+      setActiveSheetName(name);
+    };
+
+    changeDisposableRef.current = api.addEvent(api.Event.SheetValueChanged, () => {
       onDirty?.();
       scheduleDebouncedSave();
     });
+
+    const activatedDisposable = api.addEvent?.(api.Event.ActiveSheetChanged, syncActiveSheetName)
+      || api.addEvent?.(api.Event.SheetActivated, syncActiveSheetName);
 
     const notifyRename = (oldName, newName) => {
       const prev = String(oldName ?? '').trim();
@@ -137,11 +171,11 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       onDirty?.();
     };
 
-    const beforeDisposable = univerAPI.addEvent(univerAPI.Event.BeforeSheetNameChange, (params) => {
+    const beforeDisposable = api.addEvent(api.Event.BeforeSheetNameChange, (params) => {
       notifyRename(params?.oldName, params?.newName);
     });
 
-    const changedDisposable = univerAPI.addEvent?.(univerAPI.Event.SheetNameChanged, (params) => {
+    const changedDisposable = api.addEvent?.(api.Event.SheetNameChanged, (params) => {
       const next = params?.newName ?? params?.worksheet?.getSheetName?.();
       const prev = params?.oldName;
       if (prev && next) notifyRename(prev, next);
@@ -157,7 +191,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       event.stopPropagation();
 
       const sheetIdFromTab = tab.dataset?.id;
-      const workbook = univerAPI.getActiveWorkbook();
+      const workbook = api.getActiveWorkbook();
       if (!workbook || !sheetIdFromTab) return;
 
       const sheets = workbook.getSheets?.() || [];
@@ -179,6 +213,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       dispose: () => {
         beforeDisposable?.dispose?.();
         changedDisposable?.dispose?.();
+        activatedDisposable?.dispose?.();
         mountEl.removeEventListener('contextmenu', onTabContextMenu, true);
       },
     };
@@ -190,6 +225,9 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       renameDisposableRef.current = null;
       clearTimeout(debounceTimerRef.current);
       setSheetMenu(null);
+      setAddRecordOpen(false);
+      setActiveSheetName('');
+      setUniverAPI(null);
       const univerInstance = univerRef.current;
       univerRef.current = null;
       univerAPIRef.current = null;
@@ -210,8 +248,16 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     if (!sheetId || !univerAPIRef.current || savingRef.current) return;
     const workbook = univerAPIRef.current.getActiveWorkbook();
     if (!workbook) return;
-    const snapshot = workbook.save();
-    const grid = fromUniverWorkbookData(snapshot);
+    const grid = extractGridFromUniverWorkbook(workbook, localData?.name || 'Theta Sheets');
+
+    // Never persist a bad extract over a sheet that previously had required
+    // headers — that was wiping Activity ID / Activity Name on edit.
+    if (gridHasRequiredHeaders(localData) && !gridHasRequiredHeaders(grid)) {
+      onValidation?.(validateSheetGrid(grid));
+      toast.error('Could not read sheet headers after edit. Changes were not saved — try again.');
+      return;
+    }
+
     onChange?.(grid);
     onValidation?.(validateSheetGrid(grid));
 
@@ -219,6 +265,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     try {
       const saved = await sheetService.saveSheet(sheetId, grid, latestVersionRef.current);
       latestVersionRef.current = saved.version;
+      setLocalData(grid);
       onSaved?.(saved);
     } catch (err) {
       if (err?.response?.status === 409) {
@@ -227,6 +274,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
         try {
           const retried = await sheetService.saveSheet(sheetId, grid, latestVersionRef.current);
           latestVersionRef.current = retried.version;
+          setLocalData(grid);
           onSaved?.(retried);
         } catch {
           toast.error('Could not save changes. Please check your connection.');
@@ -410,7 +458,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     const nameToRemove = String(target.getSheetName?.() || sheetName);
 
     // Snapshot remaining sheets first (Univer delete can be blocked by permissions).
-    const before = fromUniverWorkbookData(workbook.save());
+    const before = extractGridFromUniverWorkbook(workbook, localData?.name || 'Theta Sheets');
     const remaining = (before.sheets || []).filter((s) => s.name !== nameToRemove);
     if (remaining.length === 0) {
       toast.error('Cannot delete the only remaining sheet.');
@@ -454,29 +502,43 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
 
   return (
     <div style={{ height, width: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-      {!hideToolbar && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 0 8px' }}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={handleImportFile}
-            style={{ display: 'none' }}
-          />
-          <button
-            type="button"
-            onClick={triggerImport}
-            style={{
-              padding: '6px 14px', background: '#f1f5f9', color: '#334155',
-              border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 12.5,
-              fontWeight: 600, cursor: 'pointer',
-            }}
-          >
-            Import file
-          </button>
-        </div>
-      )}
-      <div ref={containerRef} style={{ flex: 1, width: '100%', minHeight: 0 }} />
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '0 0 8px' }}>
+        {!hideToolbar && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleImportFile}
+              style={{ display: 'none' }}
+            />
+            <button
+              type="button"
+              onClick={triggerImport}
+              style={{
+                padding: '6px 14px', background: '#f1f5f9', color: '#334155',
+                border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 12.5,
+                fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              Import file
+            </button>
+          </>
+        )}
+        <AddRecordButton
+          disabled={!formConfig.ready}
+          onClick={() => setAddRecordOpen(true)}
+        />
+      </div>
+
+      <AddRecordPanel
+        open={addRecordOpen}
+        onClose={() => setAddRecordOpen(false)}
+        univerAPI={univerAPI}
+        config={formConfig}
+      >
+        <div ref={containerRef} style={{ height: '100%', width: '100%', minHeight: 0 }} />
+      </AddRecordPanel>
 
       {sheetMenu && createPortal(
         <>

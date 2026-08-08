@@ -13,6 +13,7 @@
     "@azure/msal-browser": "^5.4.0",
     "@tailwindcss/vite": "^4.2.1",
     "@univerjs/preset-sheets-core": "0.25.0",
+    "@univerjs/preset-sheets-data-validation": "0.25.0",
     "@univerjs/presets": "0.25.0",
     "axios": "^1.6.5",
     "express": "^5.2.1",
