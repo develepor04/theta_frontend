@@ -29,6 +29,7 @@ export default function AddRecordPanel({
   univerAPI,
   config,
   children,
+  onRecordAdded,
 }) {
   return (
     <div className="add-record-layout">
@@ -58,7 +59,12 @@ export default function AddRecordPanel({
               univerAPI={univerAPI}
               config={config}
               onCancel={onClose}
-              onSuccess={onClose}
+              onSuccess={() => {
+                onRecordAdded?.();
+                onClose();
+              }}
+              submitLabel="Add to sheet"
+              successMessage="Row added to sheet"
             />
           ) : null}
         </div>

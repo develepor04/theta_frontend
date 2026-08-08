@@ -898,8 +898,8 @@ const Dashboard = () => {
       setThetaBrowserSheets(sheets);
       setThetaBrowserFileName(fileEntry.filename);
       setThetaBrowserFileId(fileEntry.id);
-      const suggested = sheets.filter(s => hasScheduleHeaders(s.headers)).map(s => s.name);
-      setThetaBrowserSelected(suggested);
+      // Default: select every sheet in the workbook (user can uncheck).
+      setThetaBrowserSelected(sheets.map(s => s.name));
       setThetaBrowserPreviewIdx(0);
       setThetaBrowserStep('pickSheets');
       setThetaJustSaved(false);
@@ -941,12 +941,14 @@ const Dashboard = () => {
       if (showValidationErrors) toast.error('Select at least one sheet to keep in Theta Sheets.');
       return false;
     }
-    const withActivityCols = selectedSheets.find(s => hasScheduleHeaders(s.headers)) || selectedSheets[0];
+    const activitySheets = selectedSheets.filter((s) => hasScheduleHeaders(s.headers));
+    const otherSheets = selectedSheets.filter((s) => !hasScheduleHeaders(s.headers));
+    const withActivityCols = activitySheets[0] || selectedSheets[0];
     // Canonicalize ID → Activity ID etc. so the active Theta Sheet keeps a
     // stable schema. Library workbook headers are left untouched.
     const baseHeaders = canonicalizeScheduleHeaders(withActivityCols.headers || []);
     const mergedRows = [];
-    selectedSheets.forEach(s => {
+    (activitySheets.length ? activitySheets : selectedSheets).forEach(s => {
       const srcHeaders = s.headers || [];
       const srcResolved = resolveScheduleHeaders(srcHeaders);
       const idxMap = baseHeaders.map((canonical) => {
@@ -964,7 +966,19 @@ const Dashboard = () => {
         mergedRows.push(idxMap.map(i => (i >= 0 && i < row.length ? row[i] : '')));
       });
     });
-    const grid = { name: 'Theta Sheets', sheets: [{ name: 'Schedule', headers: baseHeaders, rows: mergedRows }] };
+    // Keep intelligence / cost / productivity tabs alongside the merged
+    // Schedule sheet so View Reports can use them as logical insights.
+    const grid = {
+      name: 'Theta Sheets',
+      sheets: [
+        { name: 'Schedule', headers: baseHeaders, rows: mergedRows },
+        ...otherSheets.map((s) => ({
+          name: s.name,
+          headers: (s.headers || []).map((h) => String(h ?? '').trim()),
+          rows: s.rows || [],
+        })),
+      ],
+    };
     const validation = validateSheetGrid(grid);
     if (!validation.isValid) {
       if (showValidationErrors) {
@@ -1102,10 +1116,8 @@ const Dashboard = () => {
     }
   };
 
-  // "View Reports" shows the existing Project Intelligence Dashboard's own
-  // content (embedded, sidebar-less) rather than a separate bespoke report
-  // view or a full page navigation — it already polls this same active
-  // sheet's metrics live, so it shows exactly what was just saved.
+  // "View Reports" opens the Theta Sheets Reports & Analysis UI
+  // (Timeline / Milestones / Critical Path / Deviations / One-Pager).
   const handleViewThetaReports = () => {
     setShowThetaReports(true);
   };

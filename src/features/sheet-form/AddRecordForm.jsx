@@ -1,28 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import {
-  Button,
-  Checkbox,
-  DatePicker,
-  FormLayout,
-  Input,
-  Select,
-} from '@univerjs/design';
 import { submitRecord } from './submitRecord';
 
 /**
  * Field rendering + submit for the Add Record panel.
- *
- * @param {{
- *   univerAPI?: object | null,
- *   config: import('./types').FormConfig & { ready?: boolean },
- *   onSuccess?: () => void,
- *   onCancel?: () => void,
- *   onSubmit?: (values: Record<number, any>) => Promise<void> | void,
- *   initialFormValues?: Record<number, any> | null,
- *   submitLabel?: string,
- *   successMessage?: string,
- * }} props
+ * Uses native controls so input/submit works reliably outside Univer's design system.
  */
 export default function AddRecordForm({
   univerAPI,
@@ -31,8 +13,8 @@ export default function AddRecordForm({
   onCancel,
   onSubmit,
   initialFormValues = null,
-  submitLabel = 'Submit',
-  successMessage = 'Record added',
+  submitLabel = 'Add to sheet',
+  successMessage = 'Row added to sheet',
 }) {
   const fields = config?.fields || [];
   const [values, setValues] = useState(() => ({
@@ -48,7 +30,7 @@ export default function AddRecordForm({
       ...(initialFormValues || {}),
     });
     setErrors({});
-  }, [config?.sheetName, config?.unitId, fieldsKey(fields), JSON.stringify(initialFormValues || {})]);
+  }, [config?.sheetName, config?.unitId, fieldsKey(fields)]);
 
   const setFieldValue = (column, next) => {
     setValues((prev) => ({ ...prev, [column]: next }));
@@ -78,8 +60,12 @@ export default function AddRecordForm({
     return Object.keys(nextErrors).length === 0;
   };
 
-  const handleSubmit = async () => {
-    if (!validate()) return;
+  const handleSubmit = async (e) => {
+    e?.preventDefault?.();
+    if (!validate()) {
+      toast.error('Please fill required fields.');
+      return;
+    }
     setSubmitting(true);
     try {
       if (onSubmit) {
@@ -87,7 +73,7 @@ export default function AddRecordForm({
       } else {
         const result = submitRecord(univerAPI, config, values);
         if (!result.ok) {
-          toast.error(result.error);
+          toast.error(result.error || 'Could not add record');
           return;
         }
         toast.success(successMessage);
@@ -111,7 +97,7 @@ export default function AddRecordForm({
   }
 
   return (
-    <>
+    <form className="add-record-form" onSubmit={handleSubmit}>
       <div className="add-record-panel__body">
         {fields.map((field) => {
           if (!field.editable) {
@@ -130,123 +116,110 @@ export default function AddRecordForm({
           }
 
           return (
-            <FormLayout
-              key={field.column}
-              className="add-record-field"
-              label={(
-                <span className="add-record-field__label">
-                  {field.label}
-                  {field.required ? <span className="add-record-field__required">*</span> : null}
-                </span>
-              )}
-              error={errors[field.column]}
-            >
+            <label key={field.column} className="add-record-field">
+              <span className="add-record-field__label">
+                {field.label}
+                {field.required ? <span className="add-record-field__required">*</span> : null}
+              </span>
               {renderControl(field, values[field.column], (next) => setFieldValue(field.column, next))}
-            </FormLayout>
+              {errors[field.column] ? (
+                <span className="add-record-field__error">{errors[field.column]}</span>
+              ) : null}
+            </label>
           );
         })}
       </div>
 
       <div className="add-record-panel__footer">
-        <Button type="button" variant="default" size="small" onClick={onCancel} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button
+        <button
           type="button"
-          variant="primary"
-          size="small"
-          onClick={handleSubmit}
+          className="add-record-btn add-record-btn--ghost"
+          onClick={onCancel}
+          disabled={submitting}
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          className="add-record-btn add-record-btn--primary"
           disabled={submitting || (config?.ready === false)}
         >
-          {submitLabel}
-        </Button>
+          {submitting ? 'Adding…' : submitLabel}
+        </button>
       </div>
-    </>
+    </form>
   );
 }
 
-/**
- * @param {import('./types').FormFieldConfig[]} fields
- */
 function initialValues(fields) {
-  /** @type {Record<number, string | number | boolean | Date | undefined>} */
+  /** @type {Record<number, string | number | boolean | undefined>} */
   const next = {};
   for (const field of fields) {
     if (!field.editable) continue;
-    if (field.inputType === 'checkbox') {
-      next[field.column] = false;
-    } else if (field.inputType === 'date') {
-      next[field.column] = undefined;
-    } else if (field.inputType === 'number') {
-      next[field.column] = '';
-    } else if (field.inputType === 'select') {
-      next[field.column] = '';
-    } else {
-      next[field.column] = '';
-    }
+    if (field.inputType === 'checkbox') next[field.column] = false;
+    else next[field.column] = '';
   }
   return next;
 }
 
-/**
- * @param {import('./types').FormFieldConfig[]} fields
- */
 function fieldsKey(fields) {
   return fields
     .map((f) => `${f.column}:${f.label}:${f.editable}:${f.inputType}:${(f.options || []).join('|')}`)
     .join(';');
 }
 
-/**
- * @param {import('./types').FormFieldConfig} field
- * @param {any} value
- * @param {(next: any) => void} onChange
- */
 function renderControl(field, value, onChange) {
   const inputType = field.inputType || 'text';
+  const common = {
+    className: 'add-record-input',
+    value: value == null ? '' : String(value),
+  };
 
   if (inputType === 'checkbox') {
     return (
-      <Checkbox
+      <input
+        type="checkbox"
+        className="add-record-checkbox"
         checked={Boolean(value)}
-        onChange={(checked) => onChange(Boolean(checked))}
-      >
-        {field.label}
-      </Checkbox>
-    );
-  }
-
-  if (inputType === 'select') {
-    const options = (field.options || []).map((opt) => ({ label: opt, value: opt }));
-    return (
-      <Select
-        value={value == null ? '' : String(value)}
-        options={[{ label: 'Select…', value: '' }, ...options]}
-        onChange={(next) => onChange(next)}
+        onChange={(e) => onChange(e.target.checked)}
       />
     );
   }
 
-  if (inputType === 'date') {
-    const dateValue = value instanceof Date
-      ? value
-      : (value ? new Date(value) : undefined);
+  if (inputType === 'select') {
     return (
-      <DatePicker
-        value={dateValue && !Number.isNaN(dateValue.getTime()) ? dateValue : undefined}
-        onValueChange={(date) => onChange(date)}
+      <select
+        className="add-record-input"
+        value={value == null ? '' : String(value)}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">Select…</option>
+        {(field.options || []).map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    );
+  }
+
+  if (inputType === 'date') {
+    return (
+      <input
+        type="date"
+        {...common}
+        onChange={(e) => onChange(e.target.value)}
       />
     );
   }
 
   if (inputType === 'number') {
     return (
-      <Input
+      <input
         type="number"
-        value={value == null ? '' : String(value)}
+        {...common}
         placeholder={field.label}
-        onChange={(next) => {
-          if (next === '' || next == null) {
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next === '') {
             onChange('');
             return;
           }
@@ -258,11 +231,11 @@ function renderControl(field, value, onChange) {
   }
 
   return (
-    <Input
+    <input
       type="text"
-      value={value == null ? '' : String(value)}
+      {...common}
       placeholder={field.label}
-      onChange={(next) => onChange(next)}
+      onChange={(e) => onChange(e.target.value)}
     />
   );
 }

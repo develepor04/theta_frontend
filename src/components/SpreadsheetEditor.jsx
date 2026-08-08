@@ -536,6 +536,13 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
         onClose={() => setAddRecordOpen(false)}
         univerAPI={univerAPI}
         config={formConfig}
+        onRecordAdded={() => {
+          // Ensure local browser + autosave paths pick up the new row even if
+          // Univer doesn't emit SheetValueChanged for sparse setValues.
+          onDirty?.();
+          syncSheetsToParent();
+          if (sheetId) scheduleDebouncedSave();
+        }}
       >
         <div ref={containerRef} style={{ height: '100%', width: '100%', minHeight: 0 }} />
       </AddRecordPanel>
