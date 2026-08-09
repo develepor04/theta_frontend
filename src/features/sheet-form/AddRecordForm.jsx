@@ -24,13 +24,19 @@ export default function AddRecordForm({
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
 
+  const initialKey = initialFormValues
+    ? Object.keys(initialFormValues).sort().map((k) => `${k}:${initialFormValues[k]}`).join('|')
+    : '';
+
   useEffect(() => {
     setValues({
       ...initialValues(fields),
       ...(initialFormValues || {}),
     });
     setErrors({});
-  }, [config?.sheetName, config?.unitId, fieldsKey(fields)]);
+    // initialFormValues intentionally keyed via initialKey to avoid object-identity loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.sheetName, config?.unitId, fieldsKey(fields), initialKey]);
 
   const setFieldValue = (column, next) => {
     setValues((prev) => ({ ...prev, [column]: next }));
@@ -76,8 +82,8 @@ export default function AddRecordForm({
           toast.error(result.error || 'Could not add record');
           return;
         }
-        toast.success(successMessage);
       }
+      toast.success(successMessage);
       setValues(initialValues(fields));
       setErrors({});
       onSuccess?.();
@@ -144,7 +150,7 @@ export default function AddRecordForm({
           className="add-record-btn add-record-btn--primary"
           disabled={submitting || (config?.ready === false)}
         >
-          {submitting ? 'Adding…' : submitLabel}
+          {submitting ? (submitLabel.toLowerCase().includes('save') ? 'Saving…' : 'Adding…') : submitLabel}
         </button>
       </div>
     </form>

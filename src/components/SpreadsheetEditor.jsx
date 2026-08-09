@@ -22,6 +22,7 @@ import {
   AddRecordPanel,
   useFormConfig,
 } from '../features/sheet-form';
+import { readRowValues, rowHasData } from '../features/sheet-form/rowValues';
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -67,11 +68,19 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const [sheetMenu, setSheetMenu] = useState(null); // { x, y, sheetId, sheetName, canDelete }
   const [univerAPI, setUniverAPI] = useState(null);
   const [addRecordOpen, setAddRecordOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState(null);
+  const [editFormValues, setEditFormValues] = useState(null);
   const [activeSheetName, setActiveSheetName] = useState('');
   const formConfig = useFormConfig(
     univerAPI,
     activeSheetName ? { sheetName: activeSheetName } : null,
   );
+  const formConfigRef = useRef(formConfig);
+  formConfigRef.current = formConfig;
+  const editingRowRef = useRef(null);
+  editingRowRef.current = editingRow;
+  const addRecordOpenRef = useRef(false);
+  addRecordOpenRef.current = addRecordOpen;
 
   const syncSheetsToParent = () => {
     const workbook = univerAPIRef.current?.getActiveWorkbook();
@@ -226,6 +235,8 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       clearTimeout(debounceTimerRef.current);
       setSheetMenu(null);
       setAddRecordOpen(false);
+      setEditingRow(null);
+      setEditFormValues(null);
       setActiveSheetName('');
       setUniverAPI(null);
       const univerInstance = univerRef.current;
@@ -238,6 +249,50 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetId, remountKey]);
+
+  // Open Edit Record panel when a data row is selected in the sheet.
+  useEffect(() => {
+    if (!univerAPI?.Event?.SelectionMoveEnd || typeof univerAPI.addEvent !== 'function') {
+      return undefined;
+    }
+
+    const disposable = univerAPI.addEvent(univerAPI.Event.SelectionMoveEnd, (params) => {
+      const cfg = formConfigRef.current;
+      if (!cfg?.ready || !cfg.fields?.length) return;
+
+      const selections = params?.selections;
+      if (!Array.isArray(selections) || !selections.length) return;
+
+      const range = selections[0];
+      const row = Number(range?.startRow ?? NaN);
+      // Row 0 is the header — ignore; only data rows open the editor.
+      if (!Number.isFinite(row) || row < 1) return;
+
+      // Same row already open for edit — keep panel as-is (don't reset while typing).
+      if (editingRowRef.current === row && addRecordOpenRef.current) return;
+
+      const values = readRowValues(univerAPI, cfg, row);
+      if (!rowHasData(values)) return;
+
+      setEditingRow(row);
+      setEditFormValues(values);
+      setAddRecordOpen(true);
+    });
+
+    return () => disposable?.dispose?.();
+  }, [univerAPI]);
+
+  const closeRecordPanel = () => {
+    setAddRecordOpen(false);
+    setEditingRow(null);
+    setEditFormValues(null);
+  };
+
+  const openAddRecordPanel = () => {
+    setEditingRow(null);
+    setEditFormValues(null);
+    setAddRecordOpen(true);
+  };
 
   function scheduleDebouncedSave() {
     clearTimeout(debounceTimerRef.current);
@@ -527,17 +582,19 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
         )}
         <AddRecordButton
           disabled={!formConfig.ready}
-          onClick={() => setAddRecordOpen(true)}
+          onClick={openAddRecordPanel}
         />
       </div>
 
       <AddRecordPanel
         open={addRecordOpen}
-        onClose={() => setAddRecordOpen(false)}
+        onClose={closeRecordPanel}
         univerAPI={univerAPI}
         config={formConfig}
+        editRow={editingRow}
+        initialFormValues={editFormValues}
         onRecordAdded={() => {
-          // Ensure local browser + autosave paths pick up the new row even if
+          // Ensure local browser + autosave paths pick up the new/edited row even if
           // Univer doesn't emit SheetValueChanged for sparse setValues.
           onDirty?.();
           syncSheetsToParent();
