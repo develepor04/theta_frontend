@@ -1,11 +1,19 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { LOGIN_URL } from '../services/api';
 import {
   Activity, Building2, Users, ScrollText, Zap,
-  Power, Shield, Clock, Settings, Megaphone, FolderOpen,
+  LogOut, Shield, Clock, Settings, Megaphone, FolderOpen,
 } from 'lucide-react';
 import useStore from '../store/useStore';
 import useIsMobile from '../hooks/useIsMobile';
+
+const getInitials = (name = '') => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'U';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+};
 
 const NAV_ITEMS = [
   { key: 'overview',     label: 'Overview',      icon: Activity,    group: 'Platform'   },
@@ -35,7 +43,8 @@ const GROUP_STYLE = {
 const GROUPS = ['Platform', 'Management'];
 
 const SuperAdminSidebar = ({ activeSection, onNavigate, alertCount = 0, pendingCount = 0, isMobileOpen = false, onCloseMobile }) => {
-  const { logout } = useStore();
+  const { user, logout } = useStore();
+  const navigate = useNavigate();
   const isMobile = useIsMobile(1023);
 
   const handleNavigate = (key) => {
@@ -191,28 +200,75 @@ const SuperAdminSidebar = ({ activeSection, onNavigate, alertCount = 0, pendingC
         })}
       </nav>
 
-      {/* Footer */}
+      {/* Footer — account + license + logout */}
       <div style={{
         padding: 10,
         borderTop: '1px solid rgba(148, 163, 184, 0.15)',
         background: 'rgba(255, 255, 255, 0.8)',
         flexShrink: 0,
       }}>
-        <button
-          onClick={() => { logout(); window.location.href = LOGIN_URL; }}
-          style={{
-            width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-            padding: '9px 12px', borderRadius: 8, border: 'none',
-            background: 'transparent', color: '#64748b',
-            fontSize: '0.8rem', fontWeight: 500, cursor: 'pointer',
-            transition: 'color 0.15s ease, background 0.15s ease',
+        <div
+          onClick={() => navigate('/subscription')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/subscription');
+            }
           }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748b'; }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            width: '100%', padding: '8px 10px', borderRadius: 10,
+            cursor: 'pointer',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.06)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
         >
-          <Power size={16} style={{ flexShrink: 0 }} />
-          Sign Out
-        </button>
+          <div style={{
+            width: 34, height: 34, borderRadius: '50%',
+            background: 'linear-gradient(135deg, #059669, #10b981)',
+            color: '#ffffff', fontSize: '0.75rem', fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 2px 8px rgba(16, 185, 129, 0.3)', flexShrink: 0,
+          }}>
+            {getInitials(user?.name)}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{
+              fontWeight: 600, color: '#0f172a', fontSize: '0.8rem',
+              lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {user?.name || 'User'}
+            </div>
+            <div style={{
+              fontSize: '0.68rem', color: '#059669', fontWeight: 600,
+              marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              Enterprise plan
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Sign out"
+            title="Sign out"
+            onClick={(e) => {
+              e.stopPropagation();
+              logout();
+              window.location.href = LOGIN_URL;
+            }}
+            style={{
+              flexShrink: 0, width: 32, height: 32, border: 'none', borderRadius: 8,
+              background: 'transparent', color: '#64748b',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#ef4444'; e.currentTarget.style.color = '#ffffff'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748b'; }}
+          >
+            <LogOut size={18} />
+          </button>
+        </div>
       </div>
     </aside>
     </>

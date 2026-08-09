@@ -8,7 +8,7 @@ import {
   TrendingUp,
   BookOpen,
   Globe,
-  Power,
+  LogOut,
   Activity,
   Sparkles,
   Wrench,
@@ -16,15 +16,24 @@ import {
   ExternalLink,
   Building2,
   ShieldCheck,
+  CreditCard,
 } from 'lucide-react';
 import useStore from '../store/useStore';
+
+const getInitials = (name = '') => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'U';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+};
 
 const Sidebar = ({ isMobileMenuOpen, setIsMobileMenuOpen }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useStore();
 
-  const handleLogout = () => {
+  const handleLogout = (e) => {
+    e?.stopPropagation?.();
     logout();
     window.location.href = LOGIN_URL;
   };
@@ -46,6 +55,7 @@ const Sidebar = ({ isMobileMenuOpen, setIsMobileMenuOpen }) => {
       showIf: () => ['admin', 'company_admin', 'super_admin'].includes(user?.role),
     },
     { path: '/theta-engage', label: 'Theta Engage', icon: Globe },
+    { path: '/subscription', label: 'Plans', icon: CreditCard },
     {
       path: '/company-admin',
       label: 'Company Admin',
@@ -130,10 +140,37 @@ const Sidebar = ({ isMobileMenuOpen, setIsMobileMenuOpen }) => {
       </nav>
 
       <div className="sidebar-footer">
-        <button className="nav-item" onClick={handleLogout}>
-          <Power size={20} />
-          <span>Sign Out</span>
-        </button>
+        <div
+          className="sidebar-account"
+          onClick={() => {
+            navigate('/subscription');
+            setIsMobileMenuOpen(false);
+          }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/subscription');
+              setIsMobileMenuOpen(false);
+            }
+          }}
+        >
+          <div className="user-avatar">{getInitials(user?.name)}</div>
+          <div className="user-info">
+            <div className="user-name">{user?.name || 'User'}</div>
+            <div className="user-plan">Enterprise plan</div>
+          </div>
+          <button
+            type="button"
+            className="sidebar-logout-icon"
+            onClick={handleLogout}
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut size={18} />
+          </button>
+        </div>
       </div>
     </aside>
   );

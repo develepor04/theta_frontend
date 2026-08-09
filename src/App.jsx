@@ -18,6 +18,7 @@ import PredictiveAnalysis from './pages/PredictiveAnalysis';
 import BaseInsights from './pages/BaseInsights';
 import ThetaEngage from './pages/ThetaEngage';
 import Profile from './pages/Profile';
+import Subscription from './pages/Subscription';
 import CompanyAdminPage from './pages/CompanyAdminPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import AuthTransfer from './pages/AuthTransfer';
@@ -31,6 +32,12 @@ function App() {
     if (mustChangePassword || user?.must_change_password) return <Navigate to="/first-login-password" />;
     if (user?.role === 'super_admin') return <Navigate to="/super-admin" />;
     return element;
+  };
+
+  const renderSubscriptionRoute = () => {
+    if (!isAuthenticated) return <Navigate to="/login" />;
+    if (mustChangePassword || user?.must_change_password) return <Navigate to="/first-login-password" />;
+    return <Subscription />;
   };
 
   const renderOverviewRoute = () => {
@@ -195,6 +202,10 @@ function App() {
         <Route
           path="/profile"
           element={renderProtected(<Profile />)}
+        />
+        <Route
+          path="/subscription"
+          element={renderSubscriptionRoute()}
         />
         <Route
           path="/company-admin"

@@ -2474,7 +2474,7 @@ const Dashboard = () => {
                           <div style={{ width: 36, height: 36, borderRadius: 9, background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                             <img src="/assets/theta_sheets_cloud_icon.png" alt="" style={{ width: 24, height: 24, objectFit: 'contain' }} />
                           </div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Browse theta cloud</div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Cloud</div>
                         </div>
                         <div style={{ fontSize: 12, color: '#15803d', lineHeight: 1.5 }}>
                           Pick a workbook from your company file library on Azure Blob, choose which sheet(s) to load, then edit inline — changes feed the Project Intelligence Dashboard in real time.
