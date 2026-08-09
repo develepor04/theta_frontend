@@ -16,7 +16,6 @@ import {
   ExternalLink,
   Building2,
   ShieldCheck,
-  CreditCard,
 } from 'lucide-react';
 import useStore from '../store/useStore';
 
@@ -55,7 +54,6 @@ const Sidebar = ({ isMobileMenuOpen, setIsMobileMenuOpen }) => {
       showIf: () => ['admin', 'company_admin', 'super_admin'].includes(user?.role),
     },
     { path: '/theta-engage', label: 'Theta Engage', icon: Globe },
-    { path: '/subscription', label: 'Plans', icon: CreditCard },
     {
       path: '/company-admin',
       label: 'Company Admin',
