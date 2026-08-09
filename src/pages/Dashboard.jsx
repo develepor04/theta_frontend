@@ -41,8 +41,12 @@ import {
   resolveScheduleHeaders,
 } from '../utils/thetaValidation';
 import useIsMobile from '../hooks/useIsMobile';
-import { getMsalInstance, isMsalConfigured } from '../services/msalConfig';
+import { getMsalInstance, initializeMsal, isMsalConfigured } from '../services/msalConfig';
+import { isGoogleConfigured, googleDriveSignInPopup } from '../services/googleConfig';
 import './Dashboard.css';
+
+const GOOGLE_DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
+const GOOGLE_DRIVE_SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Required columns every uploaded file must contain
@@ -268,6 +272,14 @@ const Dashboard = () => {
   const [isConnectingTheta, setIsConnectingTheta]   = useState(false);
   const [oneDrivePickerSource, setOneDrivePickerSource] = useState('theta'); // 'theta' | 'catalog'
 
+  // ── Google Drive file picker ──────────────────────────────────────────────
+  const [showGoogleDrivePicker, setShowGoogleDrivePicker] = useState(false);
+  const [googleDriveLoading, setGoogleDriveLoading]       = useState(false);
+  const [googleDriveItems, setGoogleDriveItems]           = useState([]);
+  const [googleDrivePath, setGoogleDrivePath]             = useState([]); // [{id, name}]
+  const [googleDriveToken, setGoogleDriveToken]           = useState(null);
+  const [googleDrivePickerSource, setGoogleDrivePickerSource] = useState('theta'); // 'theta' | 'catalog'
+
   const OEM_ENDPOINT_PLACEHOLDERS = {
     'Primavera':              'https://{instance}.oraclecloud.com/p6ws/restapi/project/{PROJECT_ID}/actions/invoke',
     'Primavera P6':           'https://{instance}.oraclecloud.com/p6ws/restapi/project/{PROJECT_ID}/actions/invoke',
@@ -340,12 +352,12 @@ const Dashboard = () => {
       toast('Microsoft integration not configured — paste the file URL directly.', { icon: 'ℹ️' });
       return;
     }
-    const msal = getMsalInstance();
-    const scopes = ['Files.Read'];
-    // Use a plain HTML redirect page so the full React app never loads inside the popup.
-    // ⚠️  Add https://<your-domain>/auth-redirect.html to your Azure app registration's redirect URIs.
-    const popupRedirectUri = window.location.origin + '/auth-redirect.html';
+    // Same redirect as login (window.location.origin). Using /auth-redirect.html here
+    // fails with AADSTS50011 unless that exact URI is also registered in Azure.
+    const scopes = ['Files.Read', 'User.Read'];
     try {
+      await initializeMsal();
+      const msal = getMsalInstance();
       let token;
       const accounts = msal.getAllAccounts();
       if (accounts.length > 0) {
@@ -353,24 +365,90 @@ const Dashboard = () => {
         try {
           const result = await msal.acquireTokenSilent({ scopes, account: accounts[0] });
           token = result.accessToken;
-        } catch {
-          const result = await msal.acquireTokenPopup({ scopes, redirectUri: popupRedirectUri });
+        } catch (silentErr) {
+          // Needs interactive consent for Files.Read (or session expired).
+          console.warn('[OneDrive] silent token failed, opening popup', silentErr);
+          const result = await msal.acquireTokenPopup({ scopes, account: accounts[0] });
           token = result.accessToken;
         }
       } else {
-        const result = await msal.loginPopup({ scopes, redirectUri: popupRedirectUri });
+        const result = await msal.loginPopup({ scopes });
         token = result.accessToken;
       }
+      if (!token) throw new Error('No access token returned from Microsoft');
       setOneDriveToken(token);
       setOneDrivePath([]);
       await fetchOneDriveFolder('root', token);
       setShowOneDrivePicker(true);
     } catch (err) {
-      if (err?.errorCode !== 'user_cancelled') {
-        toast.error('Could not connect to OneDrive');
-      }
+      const code = err?.errorCode || err?.code || '';
+      if (code === 'user_cancelled' || code === 'user_canceled') return;
+      console.error('[OneDrive] connect failed', err);
+      const detail = err?.message || err?.errorMessage || code || 'Unknown error';
+      toast.error(`Could not connect to OneDrive: ${detail}`);
     }
   }, [fetchOneDriveFolder]);
+
+  // ── Google Drive picker functions ─────────────────────────────────────────
+  const fetchGoogleDriveFolder = useCallback(async (folderId, token) => {
+    setGoogleDriveLoading(true);
+    try {
+      const parent = folderId === 'root' ? 'root' : folderId;
+      const q = `'${parent}' in parents and trashed = false`;
+      const params = new URLSearchParams({
+        q,
+        pageSize: '100',
+        orderBy: 'folder,name',
+        fields: 'files(id,name,mimeType,size,webViewLink)',
+        supportsAllDrives: 'true',
+        includeItemsFromAllDrives: 'true',
+      });
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGoogleDriveItems(Array.isArray(data.files) ? data.files : []);
+    } catch {
+      toast.error('Could not load Google Drive files');
+    } finally {
+      setGoogleDriveLoading(false);
+    }
+  }, []);
+
+  const openGoogleDrivePicker = useCallback(async () => {
+    if (!isGoogleConfigured()) {
+      toast('Google Drive is not configured — set VITE_GOOGLE_CLIENT_ID.', { icon: 'ℹ️' });
+      return;
+    }
+    try {
+      const token = await googleDriveSignInPopup();
+      setGoogleDriveToken(token);
+      setGoogleDrivePath([]);
+      await fetchGoogleDriveFolder('root', token);
+      setShowGoogleDrivePicker(true);
+    } catch (err) {
+      if (!err?.cancelled) {
+        toast.error(err?.message || 'Could not connect to Google Drive');
+      }
+    }
+  }, [fetchGoogleDriveFolder]);
+
+  const downloadGoogleDriveFile = useCallback(async (item, token) => {
+    if (!item?.id || !token) throw new Error('Missing Google Drive file');
+    const isNativeSheet = item.mimeType === GOOGLE_DRIVE_SHEET_MIME;
+    const url = isNativeSheet
+      ? `https://www.googleapis.com/drive/v3/files/${item.id}/export?mimeType=${encodeURIComponent('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}`
+      : `https://www.googleapis.com/drive/v3/files/${item.id}?alt=media`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    let name = item.name || 'google-drive-file.xlsx';
+    if (isNativeSheet && !/\.xlsx$/i.test(name)) name = `${name}.xlsx`;
+    return new File([blob], name, {
+      type: blob.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+  }, []);
 
   const handleThetaConnect = async (forceOneDriveItem = null, forceFile = null) => {
     let file;
@@ -2221,6 +2299,13 @@ const Dashboard = () => {
             connected: true,
             icon: '☁️',
           }] : []),
+          ...(isGoogleConfigured() ? [{
+            name: 'Google Drive',
+            description: 'Google Drive is connected. Browse and link project files directly.',
+            tag: 'Cloud Storage',
+            connected: true,
+            icon: '📂',
+          }] : []),
           ...baseCatalogTools.map(tool => ({
             ...tool,
             connected: connectedOems.includes(tool.name),
@@ -2421,23 +2506,33 @@ const Dashboard = () => {
                             <label style={{ fontSize: 12.5, fontWeight: 600, color: '#334155' }}>
                               URL <span style={{ color: '#dc2626' }}>*</span>
                             </label>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
                               <input
                                 type="text"
                                 value={linkUrl}
                                 onChange={e => setLinkUrl(e.target.value)}
                                 placeholder="Example: https://contoso-my.sharepoint.com/personal/..."
-                                style={{ flex: 1, padding: '8px 11px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12.5, color: '#0f172a', boxSizing: 'border-box' }}
+                                style={{ flex: 1, minWidth: 180, padding: '8px 11px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12.5, color: '#0f172a', boxSizing: 'border-box' }}
                               />
-                              <button
-                                onClick={openOneDrivePicker}
-                                style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12.5, color: '#0f172a', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 500 }}
-                              >
-                                Browse OneDrive…
-                              </button>
+                              {isMsalConfigured() && (
+                                <button
+                                  onClick={() => { setOneDrivePickerSource('theta'); openOneDrivePicker(); }}
+                                  style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12.5, color: '#0f172a', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 500 }}
+                                >
+                                  Browse OneDrive…
+                                </button>
+                              )}
+                              {isGoogleConfigured() && (
+                                <button
+                                  onClick={() => { setGoogleDrivePickerSource('theta'); openGoogleDrivePicker(); }}
+                                  style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12.5, color: '#0f172a', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 500 }}
+                                >
+                                  Browse Google Drive…
+                                </button>
+                              )}
                             </div>
                             <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 5 }}>
-                              Browse and select files from your OneDrive for Business storage.
+                              Browse and select files from OneDrive or Google Drive cloud storage.
                             </div>
                           </div>
                         )}
@@ -2551,6 +2646,9 @@ const Dashboard = () => {
                         if (catalogSelected === 'OneDrive') {
                           setOneDrivePickerSource('catalog');
                           openOneDrivePicker();
+                        } else if (catalogSelected === 'Google Drive') {
+                          setGoogleDrivePickerSource('catalog');
+                          openGoogleDrivePicker();
                         } else if (connectedOems.includes(catalogSelected)) {
                           setGetDataStep('link');
                         } else {
@@ -2558,7 +2656,7 @@ const Dashboard = () => {
                         }
                       }}
                       style={{ padding: '9px 22px', background: !catalogSelected ? INGEST_PRIMARY_DISABLED : INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: !catalogSelected ? 'not-allowed' : 'pointer', boxShadow: !catalogSelected ? 'none' : INGEST_PRIMARY_SHADOW }}>
-                      {catalogSelected === 'OneDrive' ? 'Browse →' : 'Next →'}
+                      {(catalogSelected === 'OneDrive' || catalogSelected === 'Google Drive') ? 'Browse →' : 'Next →'}
                     </button>
                   )}
                   {getDataStep === 'link' && (
@@ -3195,6 +3293,107 @@ const Dashboard = () => {
               <span style={{ fontSize: 12, color: '#94a3b8' }}>Click a file to select it · Folders open on click</span>
               <button
                 onClick={() => setShowOneDrivePicker(false)}
+                style={{ padding: '7px 18px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, color: '#334155', cursor: 'pointer', fontWeight: 500 }}
+              >Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Google Drive file picker modal ─────────────────────────────────── */}
+      {showGoogleDrivePicker && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 14, width: 660, maxHeight: '78vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 72px rgba(0,0,0,0.28)', overflow: 'hidden' }}>
+
+            <div style={{ padding: '15px 22px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fafbfc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 22 }}>📂</span>
+                <span style={{ fontWeight: 700, fontSize: 15, color: '#0f172a' }}>Browse Google Drive</span>
+              </div>
+              <button onClick={() => setShowGoogleDrivePicker(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', fontSize: 22, lineHeight: 1, padding: '0 4px' }}>×</button>
+            </div>
+
+            <div style={{ padding: '9px 22px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap', background: '#fff', minHeight: 38 }}>
+              <button
+                onClick={() => { setGoogleDrivePath([]); fetchGoogleDriveFolder('root', googleDriveToken); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: googleDrivePath.length === 0 ? '#0f172a' : '#7e22ce', fontWeight: googleDrivePath.length === 0 ? 700 : 500, fontSize: 12.5, padding: '2px 5px', borderRadius: 4 }}
+              >My Drive</button>
+              {googleDrivePath.map((crumb, i) => (
+                <React.Fragment key={crumb.id}>
+                  <span style={{ color: '#cbd5e1', fontSize: 13, userSelect: 'none' }}>›</span>
+                  <button
+                    onClick={() => {
+                      const newPath = googleDrivePath.slice(0, i + 1);
+                      setGoogleDrivePath(newPath);
+                      fetchGoogleDriveFolder(crumb.id, googleDriveToken);
+                    }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: i === googleDrivePath.length - 1 ? '#0f172a' : '#7e22ce', fontWeight: i === googleDrivePath.length - 1 ? 700 : 500, fontSize: 12.5, padding: '2px 5px', borderRadius: 4 }}
+                  >{crumb.name}</button>
+                </React.Fragment>
+              ))}
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {googleDriveLoading ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '52px 0', gap: 10, color: '#64748b' }}>
+                  <Loader2 size={20} className="spinning" />
+                  <span style={{ fontSize: 13 }}>Loading…</span>
+                </div>
+              ) : googleDriveItems.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '52px 0', color: '#94a3b8', fontSize: 13 }}>This folder is empty</div>
+              ) : (
+                googleDriveItems.map((item) => {
+                  const isFolder = item.mimeType === GOOGLE_DRIVE_FOLDER_MIME;
+                  const isNativeSheet = item.mimeType === GOOGLE_DRIVE_SHEET_MIME;
+                  const isSpreadsheet = !isFolder && (isNativeSheet || /\.(xlsx|xls|csv)$/i.test(item.name || ''));
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={async () => {
+                        if (isFolder) {
+                          setGoogleDrivePath((prev) => [...prev, { id: item.id, name: item.name }]);
+                          fetchGoogleDriveFolder(item.id, googleDriveToken);
+                          return;
+                        }
+                        setLinkUrl(item.webViewLink || item.name || '');
+                        setShowGoogleDrivePicker(false);
+                        if (googleDrivePickerSource === 'catalog') {
+                          setGoogleDrivePickerSource('theta');
+                          setShowOemCatalog(false);
+                          const fetchToast = toast.loading('Downloading from Google Drive…');
+                          try {
+                            const file = await downloadGoogleDriveFile(item, googleDriveToken);
+                            toast.dismiss(fetchToast);
+                            handleThetaConnect(null, file);
+                          } catch {
+                            toast.error('Could not download file from Google Drive', { id: fetchToast });
+                          }
+                        } else {
+                          toast.success(`Selected: ${item.name}`);
+                        }
+                      }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 22px', cursor: 'pointer', borderBottom: '1px solid #f8fafc' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = '#f8fafc'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <span style={{ fontSize: 20, flexShrink: 0 }}>
+                        {isFolder ? '📁' : isSpreadsheet ? '📊' : '📄'}
+                      </span>
+                      <span style={{ flex: 1, fontSize: 13, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
+                      {!isFolder && item.size != null && item.size !== '' && (
+                        <span style={{ fontSize: 11.5, color: '#94a3b8', flexShrink: 0 }}>{formatSize(Number(item.size))}</span>
+                      )}
+                      {isFolder && <span style={{ fontSize: 16, color: '#cbd5e1', flexShrink: 0 }}>›</span>}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div style={{ padding: '11px 22px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fafbfc' }}>
+              <span style={{ fontSize: 12, color: '#94a3b8' }}>Click a file to select it · Folders open on click</span>
+              <button
+                onClick={() => setShowGoogleDrivePicker(false)}
                 style={{ padding: '7px 18px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, color: '#334155', cursor: 'pointer', fontWeight: 500 }}
               >Cancel</button>
             </div>
