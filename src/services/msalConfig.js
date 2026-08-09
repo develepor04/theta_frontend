@@ -1,7 +1,8 @@
 import { PublicClientApplication } from '@azure/msal-browser';
+import { getRuntimeEnv } from './runtimeEnv';
 
-const TENANT_ID = import.meta.env.VITE_AZURE_TENANT_ID || '';
-const CLIENT_ID = import.meta.env.VITE_AZURE_CLIENT_ID  || '';
+const TENANT_ID = getRuntimeEnv('VITE_AZURE_TENANT_ID');
+const CLIENT_ID = getRuntimeEnv('VITE_AZURE_CLIENT_ID');
 
 // SECURITY: VITE_AZURE_TENANT_ID must be set to your org's tenant ID.
 // Leaving it unset falls back to 'common', which allows any Microsoft

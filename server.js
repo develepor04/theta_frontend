@@ -98,6 +98,8 @@ if (BACKEND_ORIGIN) {
 // Diagnostic — open in browser to verify the proxy env is loaded
 app.get('/__health', (_req, res) => {
   const raw = RAW_BACKEND_URL == null ? null : String(RAW_BACKEND_URL);
+  const azureClientId = process.env.VITE_AZURE_CLIENT_ID || '';
+  const googleClientId = process.env.VITE_GOOGLE_CLIENT_ID || '';
   res.json({
     ok: true,
     backendConfigured: Boolean(BACKEND_ORIGIN),
@@ -108,7 +110,27 @@ app.get('/__health', (_req, res) => {
     backendUrlEndsWithAzurewebsites: Boolean(
       raw && /\.azurewebsites\.net\/?$/i.test(raw.trim().replace(/^["']|["']$/g, ''))
     ),
+    // Catalog OneDrive / Google Drive cards need these (public SPA client IDs)
+    azureClientIdPresent: Boolean(azureClientId.trim()),
+    googleClientIdPresent: Boolean(googleClientId.trim()),
   });
+});
+
+/**
+ * Runtime SPA config — Azure App Settings are read here at request time.
+ * Vite only bakes import.meta.env at build time; CI has no local .env, so
+ * without this endpoint OneDrive/Google Drive stay hidden in Catalog.
+ */
+app.get('/env.js', (_req, res) => {
+  const payload = {
+    VITE_AZURE_CLIENT_ID: process.env.VITE_AZURE_CLIENT_ID || '',
+    VITE_AZURE_TENANT_ID: process.env.VITE_AZURE_TENANT_ID || '',
+    VITE_GOOGLE_CLIENT_ID: process.env.VITE_GOOGLE_CLIENT_ID || '',
+  };
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('application/javascript').send(
+    `window.__RUNTIME_ENV__=${JSON.stringify(payload)};`
+  );
 });
 
 // Always handle /api — never fall through to index.html

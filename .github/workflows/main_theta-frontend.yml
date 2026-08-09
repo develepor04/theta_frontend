@@ -23,7 +23,15 @@ jobs:
         with:
           node-version: '24.x'
 
+      # VITE_* are baked into the SPA at build time. Local .env is gitignored,
+      # so Catalog OneDrive/Google Drive stay hidden unless these are set here.
+      # Also set the same names as App Settings on the frontend App Service —
+      # server.js /env.js reads them at runtime as a fallback.
       - name: npm install, build, and test
+        env:
+          VITE_AZURE_CLIENT_ID: ${{ secrets.VITE_AZURE_CLIENT_ID }}
+          VITE_AZURE_TENANT_ID: ${{ secrets.VITE_AZURE_TENANT_ID }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
         run: |
           npm install
           npm run build --if-present

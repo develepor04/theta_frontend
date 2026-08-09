@@ -1,4 +1,6 @@
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+import { getRuntimeEnv } from './runtimeEnv';
+
+const GOOGLE_CLIENT_ID = getRuntimeEnv('VITE_GOOGLE_CLIENT_ID');
 
 /** Read-only Drive access for the Catalog file picker. */
 export const GOOGLE_DRIVE_READONLY_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
