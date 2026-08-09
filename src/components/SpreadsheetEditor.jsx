@@ -2,12 +2,15 @@ import React, { useEffect, useImperativeHandle, useRef, useState, forwardRef } f
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
-import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
+import { createUniver, ICommandService, LocaleType, mergeLocales } from '@univerjs/presets';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import UniverPresetSheetsCoreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
 import UniverPresetSheetsDataValidationEnUS from '@univerjs/preset-sheets-data-validation/locales/en-US';
+import { IMenuManagerService, RibbonStartGroup } from '@univerjs/ui';
+import '@univerjs/sheets-numfmt/lib/facade';
 import '@univerjs/preset-sheets-core/lib/index.css';
+import '@univerjs/sheets-numfmt-ui/lib/index.css';
 import '@univerjs/design/lib/index.css';
 import { sheetService } from '../services/api';
 import {
@@ -15,7 +18,14 @@ import {
   extractGridFromUniverWorkbook,
   gridHasRequiredHeaders,
   blankGrid,
+  applyDateNumberFormatsToWorkbook,
+  applyColumnFormatsFromGrid,
+  coerceDateColumnValuesInWorkbook,
 } from '../utils/sheetDataUtils';
+import {
+  getActiveDateFormat,
+  loadStoredDateFormat,
+} from '../utils/dateFormats';
 import { validateSheetGrid } from '../utils/thetaValidation';
 import {
   AddRecordButton,
@@ -25,6 +35,87 @@ import {
 import { readRowValues, rowHasData } from '../features/sheet-form/rowValues';
 
 const SAVE_DEBOUNCE_MS = 500;
+
+/** Univer numfmt ribbon items (from @univerjs/sheets-numfmt-ui). */
+const NUMFMT_RIBBON_ITEMS = [
+  ['sheet.operation.open.numfmt.panel', 3],
+  ['sheet.command.numfmt.set.percent', 3.1],
+  ['sheet.command.numfmt.set.currency', 3.2],
+  ['sheet.command.numfmt.add.decimal.command', 3.3],
+  ['sheet.command.numfmt.subtract.decimal.command', 3.4],
+];
+
+/**
+ * Univer registers Number Format under Start → Layout (late order), so it
+ * collapses into the "…" overflow on typical widths. Move the built-in controls
+ * into Start → Format (after font size, before bold) like Excel / Google Sheets.
+ *
+ * Numfmt menus are registered in the plugin's onRendered lifecycle — after
+ * createUniver returns — so we retry on menuChanged$ until they appear.
+ */
+function promoteNumfmtToolbarControls(univer) {
+  try {
+    const menuManager = univer.__getInjector?.()?.get?.(IMenuManagerService);
+    if (!menuManager) return undefined;
+
+    const findGroup = (node, key) => {
+      if (!node || typeof node !== 'object') return null;
+      if (Object.prototype.hasOwnProperty.call(node, key)) return node[key];
+      for (const value of Object.values(node)) {
+        if (!value || typeof value !== 'object' || value.menuItemFactory) continue;
+        const found = findGroup(value, key);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    const tryPromote = () => {
+      const root = menuManager._menu;
+      const layout = findGroup(root, RibbonStartGroup.LAYOUT);
+      const format = findGroup(root, RibbonStartGroup.FORMAT);
+      const panelId = NUMFMT_RIBBON_ITEMS[0][0];
+
+      // Already promoted into Format.
+      if (format?.[panelId]?.menuItemFactory) return true;
+      // Not registered yet (onRendered hasn't run).
+      if (!layout?.[panelId]?.menuItemFactory) return false;
+
+      if (format) {
+        for (const [id, order] of NUMFMT_RIBBON_ITEMS) {
+          const item = layout[id];
+          if (!item?.menuItemFactory) continue;
+          format[id] = { ...item, order };
+          delete layout[id];
+        }
+        menuManager.menuChanged$?.next?.();
+        return true;
+      }
+
+      // Fallback: keep them in Layout but pull ahead of align/wrap.
+      menuManager.mergeMenu({
+        [RibbonStartGroup.LAYOUT]: Object.fromEntries(
+          NUMFMT_RIBBON_ITEMS.map(([id], index) => [id, { order: -5 + index * 0.1 }]),
+        ),
+      });
+      return true;
+    };
+
+    if (tryPromote()) return undefined;
+
+    const sub = menuManager.menuChanged$?.subscribe?.(() => {
+      if (tryPromote()) sub?.unsubscribe?.();
+    });
+    // Safety timeout so we don't leak a subscription if menus never appear.
+    const timer = setTimeout(() => sub?.unsubscribe?.(), 5000);
+    return () => {
+      clearTimeout(timer);
+      sub?.unsubscribe?.();
+    };
+  } catch {
+    // Toolbar customization is best-effort; formatting still works via API/form.
+    return undefined;
+  }
+}
 
 /**
  * Self-contained live spreadsheet editor (Univer). Saves to the API whenever
@@ -61,6 +152,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const debounceTimerRef = useRef(null);
   const latestVersionRef = useRef(version);
   const savingRef = useRef(false);
+  const dirtyRef = useRef(false);
   const fileInputRef = useRef(null);
   const [remountKey, setRemountKey] = useState(0);
   const [localData, setLocalData] = useState(() => initialData || blankGrid());
@@ -118,13 +210,22 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     latestVersionRef.current = version;
   }, [version]);
 
-  // Keep Univer popup portals above the Theta Sheets full-screen overlay (z=1650).
+  // Keep Univer popups/dropdowns above the Theta Sheets full-screen overlay (z=1650).
+  // Formats / font / color menus use Radix portals with univer-z-[1080], which otherwise
+  // open "invisibly" behind the overlay (click looks like a no-op).
   useEffect(() => {
     const style = document.createElement('style');
     style.setAttribute('data-theta-univer-z', '1');
     style.textContent = `
       [id^="univer-popup-portal"] { z-index: 10000 !important; }
       [id^="univer-popup-portal"] * { z-index: inherit; }
+      [data-slot="dropdown-menu-content"],
+      [data-slot="dropdown-menu-sub-content"],
+      [data-slot="popover-content"],
+      [data-slot="select-content"],
+      [data-radix-popper-content-wrapper] {
+        z-index: 10000 !important;
+      }
     `;
     document.head.appendChild(style);
     return () => style.remove();
@@ -147,27 +248,61 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
         ),
       },
       presets: [
-        UniverSheetsCorePreset({ container: mountEl }),
+        UniverSheetsCorePreset({
+          container: mountEl,
+        }),
         UniverSheetsDataValidationPreset(),
       ],
     });
     univerRef.current = univer;
     univerAPIRef.current = api;
     setUniverAPI(api);
+    const disposeNumfmtPromote = promoteNumfmtToolbarControls(univer);
+
+    // Restore last preferred date format for auto-applied date columns.
+    loadStoredDateFormat();
+    // Ignore bootstrap mutations (coerce/format restore) so open doesn't autosave.
+    let suppressDirty = true;
 
     const workbookData = toUniverWorkbookData(localData);
     api.createWorkbook(workbookData);
-    setActiveSheetName(api.getActiveWorkbook()?.getActiveSheet?.()?.getSheetName?.() || '');
+    const liveWorkbook = api.getActiveWorkbook?.();
+    // Dates must be Excel serials (not "yyyy-MM-dd" strings) for Formats to change display.
+    coerceDateColumnValuesInWorkbook(liveWorkbook);
+    // Defaults for date columns, then restore any Formats the user previously saved.
+    applyDateNumberFormatsToWorkbook(liveWorkbook, getActiveDateFormat());
+    applyColumnFormatsFromGrid(liveWorkbook, localData);
+    setActiveSheetName(liveWorkbook?.getActiveSheet?.()?.getSheetName?.() || '');
+    // Allow a tick for Univer to finish applying restored formats.
+    setTimeout(() => { suppressDirty = false; }, 0);
 
     const syncActiveSheetName = () => {
       const name = api.getActiveWorkbook()?.getActiveSheet?.()?.getSheetName?.() || '';
       setActiveSheetName(name);
     };
 
-    changeDisposableRef.current = api.addEvent(api.Event.SheetValueChanged, () => {
+    const markDirtyAndSave = () => {
+      if (suppressDirty) return;
+      dirtyRef.current = true;
       onDirty?.();
       scheduleDebouncedSave();
-    });
+    };
+
+    changeDisposableRef.current = api.addEvent(api.Event.SheetValueChanged, markDirtyAndSave);
+
+    // Number-format changes use SetNumfmtMutation and do NOT fire SheetValueChanged.
+    // Listen for numfmt commands so Formats edits autosave like cell edits.
+    let numfmtCommandDisposable = null;
+    try {
+      const commandService = univer.__getInjector?.()?.get?.(ICommandService);
+      numfmtCommandDisposable = commandService?.onCommandExecuted?.((commandInfo) => {
+        const id = String(commandInfo?.id || '');
+        if (!id.includes('numfmt')) return;
+        markDirtyAndSave();
+      });
+    } catch {
+      numfmtCommandDisposable = null;
+    }
 
     const activatedDisposable = api.addEvent?.(api.Event.ActiveSheetChanged, syncActiveSheetName)
       || api.addEvent?.(api.Event.SheetActivated, syncActiveSheetName);
@@ -228,11 +363,38 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     };
 
     return () => {
+      disposeNumfmtPromote?.();
+      numfmtCommandDisposable?.dispose?.();
       changeDisposableRef.current?.dispose?.();
       changeDisposableRef.current = null;
       renameDisposableRef.current?.dispose?.();
       renameDisposableRef.current = null;
       clearTimeout(debounceTimerRef.current);
+
+      // Flush pending Formats/value edits before Univer is disposed so reopen
+      // doesn't lose the last change that was still waiting on debounce.
+      if (dirtyRef.current && sheetId && univerAPIRef.current) {
+        try {
+          const workbook = univerAPIRef.current.getActiveWorkbook?.();
+          if (workbook) {
+            const grid = extractGridFromUniverWorkbook(workbook, localData?.name || 'Theta Sheets');
+            const canSave = !gridHasRequiredHeaders(localData) || gridHasRequiredHeaders(grid);
+            if (canSave && grid?.sheets?.length) {
+              onChange?.(grid);
+              sheetService.saveSheet(sheetId, grid, latestVersionRef.current)
+                .then((saved) => {
+                  latestVersionRef.current = saved.version;
+                  dirtyRef.current = false;
+                  onSaved?.(saved);
+                })
+                .catch(() => {});
+            }
+          }
+        } catch {
+          // best-effort flush
+        }
+      }
+
       setSheetMenu(null);
       setAddRecordOpen(false);
       setEditingRow(null);
@@ -321,6 +483,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       const saved = await sheetService.saveSheet(sheetId, grid, latestVersionRef.current);
       latestVersionRef.current = saved.version;
       setLocalData(grid);
+      dirtyRef.current = false;
       onSaved?.(saved);
     } catch (err) {
       if (err?.response?.status === 409) {
@@ -330,6 +493,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
           const retried = await sheetService.saveSheet(sheetId, grid, latestVersionRef.current);
           latestVersionRef.current = retried.version;
           setLocalData(grid);
+          dirtyRef.current = false;
           onSaved?.(retried);
         } catch {
           toast.error('Could not save changes. Please check your connection.');

@@ -966,16 +966,47 @@ const Dashboard = () => {
         mergedRows.push(idxMap.map(i => (i >= 0 && i < row.length ? row[i] : '')));
       });
     });
+    // Remap saved Formats (header → pattern) onto the canonical Schedule headers.
+    const scheduleFormatSource = (activitySheets.length ? activitySheets : selectedSheets)[0];
+    const srcFormats = scheduleFormatSource?.columnFormats || {};
+    const srcHeadersForFormats = scheduleFormatSource?.headers || [];
+    /** @type {Record<string, string>} */
+    const scheduleColumnFormats = {};
+    baseHeaders.forEach((canonical) => {
+      const srcResolved = resolveScheduleHeaders(srcHeadersForFormats);
+      let srcIdx = srcHeadersForFormats.indexOf(canonical);
+      if (canonical === 'Activity ID' && srcResolved.activityId != null) {
+        srcIdx = srcHeadersForFormats.indexOf(srcResolved.activityId);
+      } else if (canonical === 'Activity Name' && srcResolved.activityName != null) {
+        srcIdx = srcHeadersForFormats.indexOf(srcResolved.activityName);
+      }
+      const srcHeader = srcIdx >= 0 ? String(srcHeadersForFormats[srcIdx] ?? '').trim() : '';
+      const fmt = (srcHeader && srcFormats[srcHeader])
+        || srcFormats[canonical]
+        || (srcIdx >= 0 ? srcFormats[String(srcIdx)] : '');
+      if (fmt) scheduleColumnFormats[canonical] = fmt;
+    });
+
     // Keep intelligence / cost / productivity tabs alongside the merged
     // Schedule sheet so View Reports can use them as logical insights.
     const grid = {
       name: 'Theta Sheets',
       sheets: [
-        { name: 'Schedule', headers: baseHeaders, rows: mergedRows },
+        {
+          name: 'Schedule',
+          headers: baseHeaders,
+          rows: mergedRows,
+          ...(Object.keys(scheduleColumnFormats).length
+            ? { columnFormats: scheduleColumnFormats }
+            : {}),
+        },
         ...otherSheets.map((s) => ({
           name: s.name,
           headers: (s.headers || []).map((h) => String(h ?? '').trim()),
           rows: s.rows || [],
+          ...(s.columnFormats && Object.keys(s.columnFormats).length
+            ? { columnFormats: s.columnFormats }
+            : {}),
         })),
       ],
     };
@@ -1656,8 +1687,18 @@ const Dashboard = () => {
                 sheetId={activeSheetId}
                 version={activeSheetVersion}
                 initialData={activeSheetData}
-                onChange={(grid) => { liveSheetGridRef.current = grid; }}
-                onSaved={(saved) => { setActiveSheetVersion(saved.version); liveSheetGridRef.current = saved.data; }}
+                onChange={(grid) => {
+                  liveSheetGridRef.current = grid;
+                  // Keep reopen payload in sync (includes columnFormats).
+                  if (grid) setActiveSheetData(grid);
+                }}
+                onSaved={(saved) => {
+                  setActiveSheetVersion(saved.version);
+                  if (saved?.data) {
+                    setActiveSheetData(saved.data);
+                    liveSheetGridRef.current = saved.data;
+                  }
+                }}
                 onValidation={setThetaEditorValidation}
                 height="100%"
               />

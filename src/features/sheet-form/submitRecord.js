@@ -1,3 +1,5 @@
+import { isDateColumnLabel } from '../../utils/sheetDataUtils';
+import { getActiveDateFormat } from '../../utils/dateFormats';
 import { isoToExcelSerial } from './rowValues';
 
 /**
@@ -28,7 +30,11 @@ export function submitRecord(univerAPI, config, formState) {
       const lastRow = typeof fWorksheet.getLastRow === 'function'
         ? fWorksheet.getLastRow()
         : -1;
-      return { ok: true, targetRow: Number.isFinite(lastRow) ? lastRow : -1 };
+      const targetRow = Number.isFinite(lastRow) ? lastRow : -1;
+      if (targetRow >= 1) {
+        applyDateFormatsForFields(fWorksheet, config.fields, targetRow);
+      }
+      return { ok: true, targetRow };
     }
 
     // Fallback: write cells on the next empty row.
@@ -36,6 +42,7 @@ export function submitRecord(univerAPI, config, formState) {
     if (!Number.isFinite(lastRow) || lastRow < 0) lastRow = 0;
     const targetRow = Math.max(1, lastRow + 1);
     writeRowCells(fWorksheet, targetRow, rowContents, { clearEmpty: false });
+    applyDateFormatsForFields(fWorksheet, config.fields, targetRow);
     return { ok: true, targetRow };
   } catch (err) {
     return {
@@ -82,12 +89,48 @@ export function updateRecord(univerAPI, config, formState, targetRow) {
         range.setValues([[next]]);
       }
     }
+    applyDateFormatsForFields(fWorksheet, config.fields, targetRow);
     return { ok: true, targetRow };
   } catch (err) {
     return {
       ok: false,
       error: err?.message || 'Failed to update the row.',
     };
+  }
+}
+
+/**
+ * Keep date cells numeric-formatted after form writes.
+ * Prefer the format already on this column (user Formats choice) over the default.
+ * @param {any} fWorksheet
+ * @param {import('./types').FormFieldConfig[]} fields
+ * @param {number} targetRow
+ */
+function applyDateFormatsForFields(fWorksheet, fields, targetRow) {
+  if (!fWorksheet?.getRange || !Number.isFinite(targetRow) || targetRow < 1) return;
+  for (const field of fields || []) {
+    const isDate = field.inputType === 'date' || isDateColumnLabel(field.label);
+    if (!isDate) continue;
+    const col = Number(field.column);
+    if (!Number.isFinite(col) || col < 0) continue;
+    try {
+      const range = fWorksheet.getRange(targetRow, col, 1, 1);
+      if (typeof range.setNumberFormat !== 'function') continue;
+      let fmt = getActiveDateFormat();
+      try {
+        const probeRow = targetRow > 1 ? targetRow - 1 : targetRow;
+        const probe = fWorksheet.getRange(probeRow, col, 1, 1);
+        const existing = probe.getNumberFormat?.() || range.getNumberFormat?.();
+        if (existing && String(existing).trim() && !/^general$/i.test(String(existing).trim())) {
+          fmt = String(existing).trim();
+        }
+      } catch {
+        // keep default
+      }
+      range.setNumberFormat(fmt);
+    } catch {
+      // ignore per-cell format failures
+    }
   }
 }
 
