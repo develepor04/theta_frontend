@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Signing in…</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: sans-serif;
+      font-size: 14px;
+      color: #64748b;
+      background: #f8fafc;
+    }
+  </style>
+</head>
+<body>
+  Completing sign-in…
+  <!--
+    MSAL Browser v5 requires this redirect bridge. Without broadcastResponseToMainFrame(),
+    the popup stays stuck on this page after Microsoft returns #code=...
+  -->
+  <script type="module">
+    import { broadcastResponseToMainFrame } from '@azure/msal-browser/redirect-bridge';
+
+    broadcastResponseToMainFrame().catch((error) => {
+      console.error('[MSAL redirect bridge]', error);
+      document.body.textContent = 'Sign-in could not complete. You can close this window.';
+    });
+  </script>
+</body>
+</html>

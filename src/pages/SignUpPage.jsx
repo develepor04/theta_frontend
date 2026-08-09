@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import { Mail, Lock, User, Eye, EyeOff, Loader2, Building2, CheckCircle2 } from 'lucide-react';
 import useStore from '../store/useStore';
 import { authService, companyService } from '../services/api';
-import { getMsalInstance, loginRequest } from '../services/msalConfig';
+import { msalPopup } from '../services/msalConfig';
 import { googleSignInPopup } from '../services/googleConfig';
 import './AuthPages.css';
 
@@ -86,9 +86,7 @@ const SignUpPage = () => {
     setError('');
     setMsLoading(true);
     try {
-      const msalInstance = getMsalInstance();
-      await msalInstance.initialize();
-      const result = await msalInstance.loginPopup(loginRequest);
+      const result = await msalPopup({ scopes: ['User.Read'] }, { preferSilent: false });
       const response = await authService.microsoftLogin(result.accessToken);
       login(response.user, response.token);
       toast.success(`Welcome, ${response.user.name}!`);

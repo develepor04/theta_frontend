@@ -1,7 +1,11 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
-import fs from 'fs'
-import tailwindcss from "@tailwindcss/vite"
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import tailwindcss from "@tailwindcss/vite";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Dev/preview: mirror production /env.js so index.html does not 404. */
 function runtimeEnvPlugin(env) {
@@ -61,6 +65,13 @@ export default defineConfig(({ mode }) => {
   },
   build: {
     chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        // MSAL v5 popup/silent redirect bridge (must call broadcastResponseToMainFrame)
+        'auth-redirect': path.resolve(__dirname, 'auth-redirect.html'),
+      },
+    },
   },
 };
 });

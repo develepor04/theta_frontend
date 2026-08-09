@@ -20,7 +20,6 @@ import ThetaEngage from './pages/ThetaEngage';
 import Profile from './pages/Profile';
 import CompanyAdminPage from './pages/CompanyAdminPage';
 import SuperAdminPage from './pages/SuperAdminPage';
-import { initializeMsal } from './services/msalConfig';
 import AuthTransfer from './pages/AuthTransfer';
 import ProjectIntelligenceDashboard from './pages/ProjectIntelligenceDashboard';
 
@@ -73,13 +72,8 @@ function App() {
     return <Navigate to="/dashboard" />;
   };
 
-  // Initialize MSAL on component mount
-  useEffect(() => {
-    const init = async () => {
-      await initializeMsal();
-    };
-    init();
-  }, []);
+  // MSAL is initialized once in main.jsx before React mounts (avoids
+  // interaction_in_progress from duplicate init + StrictMode double-effects).
 
   useEffect(() => {
     // Load user data if authenticated

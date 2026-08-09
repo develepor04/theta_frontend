@@ -41,7 +41,7 @@ import {
   resolveScheduleHeaders,
 } from '../utils/thetaValidation';
 import useIsMobile from '../hooks/useIsMobile';
-import { getMsalInstance, initializeMsal, isMsalConfigured } from '../services/msalConfig';
+import { isMsalConfigured, msalPopup, POPUP_REDIRECT_URI } from '../services/msalConfig';
 import { isGoogleConfigured, googleDriveSignInPopup } from '../services/googleConfig';
 import './Dashboard.css';
 
@@ -352,29 +352,13 @@ const Dashboard = () => {
       toast('Microsoft integration not configured — paste the file URL directly.', { icon: 'ℹ️' });
       return;
     }
-    // Same redirect as login (window.location.origin). Using /auth-redirect.html here
-    // fails with AADSTS50011 unless that exact URI is also registered in Azure.
-    const scopes = ['Files.Read', 'User.Read'];
+    // Popup must return to /auth-redirect.html (not the React app).
     try {
-      await initializeMsal();
-      const msal = getMsalInstance();
-      let token;
-      const accounts = msal.getAllAccounts();
-      if (accounts.length > 0) {
-        msal.setActiveAccount(accounts[0]);
-        try {
-          const result = await msal.acquireTokenSilent({ scopes, account: accounts[0] });
-          token = result.accessToken;
-        } catch (silentErr) {
-          // Needs interactive consent for Files.Read (or session expired).
-          console.warn('[OneDrive] silent token failed, opening popup', silentErr);
-          const result = await msal.acquireTokenPopup({ scopes, account: accounts[0] });
-          token = result.accessToken;
-        }
-      } else {
-        const result = await msal.loginPopup({ scopes });
-        token = result.accessToken;
-      }
+      const result = await msalPopup({
+        scopes: ['Files.Read', 'User.Read'],
+        redirectUri: POPUP_REDIRECT_URI,
+      });
+      const token = result?.accessToken;
       if (!token) throw new Error('No access token returned from Microsoft');
       setOneDriveToken(token);
       setOneDrivePath([]);
@@ -385,6 +369,17 @@ const Dashboard = () => {
       if (code === 'user_cancelled' || code === 'user_canceled') return;
       console.error('[OneDrive] connect failed', err);
       const detail = err?.message || err?.errorMessage || code || 'Unknown error';
+      if (String(detail).includes('AADSTS50011') || code === 'invalid_request') {
+        toast.error(
+          'Add this Redirect URI in Azure AD app registration: ' +
+            POPUP_REDIRECT_URI
+        );
+        return;
+      }
+      if (code === 'interaction_in_progress') {
+        toast.error('Microsoft sign-in was still open. Close any Microsoft popup, then try Browse again.');
+        return;
+      }
       toast.error(`Could not connect to OneDrive: ${detail}`);
     }
   }, [fetchOneDriveFolder]);
@@ -2301,9 +2296,9 @@ const Dashboard = () => {
           }] : []),
           ...(isGoogleConfigured() ? [{
             name: 'Google Drive',
-            description: 'Google Drive is connected. Browse and link project files directly.',
+            description: 'Browse and link project files from Google Drive.',
             tag: 'Cloud Storage',
-            connected: true,
+            connected: false,
             icon: '📂',
           }] : []),
           ...baseCatalogTools.map(tool => ({
@@ -2316,6 +2311,25 @@ const Dashboard = () => {
           t.name.toLowerCase().includes(catalogSearch.toLowerCase()) ||
           t.description.toLowerCase().includes(catalogSearch.toLowerCase())
         );
+
+        const activateCatalogTool = (toolName) => {
+          if (!toolName) return;
+          setCatalogSelected(toolName);
+          if (toolName === 'OneDrive') {
+            setOneDrivePickerSource('catalog');
+            openOneDrivePicker();
+          } else if (toolName === 'Google Drive') {
+            setGoogleDrivePickerSource('catalog');
+            openGoogleDrivePicker();
+          } else if (connectedOems.includes(toolName)) {
+            setGetDataStep('link');
+          } else {
+            openOemConnectModal(toolName);
+          }
+        };
+
+        const selectedCatalogTool = catalogTools.find(t => t.name === catalogSelected);
+        const catalogActionLabel = selectedCatalogTool?.connected ? 'Browse →' : 'Connect →';
 
         const STEP_LABELS = { catalog: 'Select source', link: 'Link to file', configure: 'Configure' };
         const steps = ['catalog', 'link', 'configure'];
@@ -2641,22 +2655,9 @@ const Dashboard = () => {
                 <div>
                   {getDataStep === 'catalog' && catalogTab === 'catalog' && (
                     <button disabled={!catalogSelected}
-                      onClick={() => {
-                        if (!catalogSelected) return;
-                        if (catalogSelected === 'OneDrive') {
-                          setOneDrivePickerSource('catalog');
-                          openOneDrivePicker();
-                        } else if (catalogSelected === 'Google Drive') {
-                          setGoogleDrivePickerSource('catalog');
-                          openGoogleDrivePicker();
-                        } else if (connectedOems.includes(catalogSelected)) {
-                          setGetDataStep('link');
-                        } else {
-                          openOemConnectModal(catalogSelected);
-                        }
-                      }}
+                      onClick={() => activateCatalogTool(catalogSelected)}
                       style={{ padding: '9px 22px', background: !catalogSelected ? INGEST_PRIMARY_DISABLED : INGEST_PRIMARY_BG, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: !catalogSelected ? 'not-allowed' : 'pointer', boxShadow: !catalogSelected ? 'none' : INGEST_PRIMARY_SHADOW }}>
-                      {(catalogSelected === 'OneDrive' || catalogSelected === 'Google Drive') ? 'Browse →' : 'Next →'}
+                      {catalogActionLabel}
                     </button>
                   )}
                   {getDataStep === 'link' && (
