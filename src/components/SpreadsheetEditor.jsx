@@ -140,6 +140,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   onDirty,
   onSheetRenamed,
   onSheetsChange,
+   onShare,
   onSheetDeleted,
   hideToolbar = false,
   height = '600px',
@@ -158,6 +159,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const [localData, setLocalData] = useState(() => initialData || blankGrid());
   // Excel-style sheet-tab context menu (portaled above Theta overlays)
   const [sheetMenu, setSheetMenu] = useState(null); // { x, y, sheetId, sheetName, canDelete }
+  const [showFileMenu, setShowFileMenu] = useState(false);
   const [univerAPI, setUniverAPI] = useState(null);
   const [addRecordOpen, setAddRecordOpen] = useState(false);
   const [editingRow, setEditingRow] = useState(null);
