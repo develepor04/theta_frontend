@@ -342,10 +342,22 @@ export const thetaFileService = {
   },
 
   downloadBlob: async (fileId) => {
-    const response = await api.get(`/theta-files/${fileId}/download`, {
-      responseType: 'blob',
-    });
-    return response.data;
+    try {
+      const response = await api.get(`/theta-files/${fileId}/download`, {
+        responseType: 'blob',
+      });
+      return response.data;
+    } catch (err) {
+      const data = err?.response?.data;
+      if (data instanceof Blob) {
+        try {
+          err.response.data = JSON.parse(await data.text());
+        } catch {
+          // keep original blob body
+        }
+      }
+      throw err;
+    }
   },
 
   /** Overwrite an existing library workbook in place (same file id). */
@@ -360,6 +372,27 @@ export const thetaFileService = {
 
   delete: async (fileId) => {
     const response = await api.delete(`/theta-files/${fileId}`);
+    return response.data;
+  },
+
+  searchShareUsers: async (query = '') => {
+    const response = await api.get('/theta-files/share-users', {
+      params: { q: query },
+    });
+    return response.data;
+  },
+
+  listShares: async (fileId) => {
+    const response = await api.get(`/theta-files/${fileId}/shares`);
+    return response.data;
+  },
+
+  share: async (fileId, { userId, email, permission = 'viewer' }) => {
+    const response = await api.post(`/theta-files/${fileId}/shares`, {
+      user_id: userId,
+      email,
+      permission,
+    });
     return response.data;
   },
 };

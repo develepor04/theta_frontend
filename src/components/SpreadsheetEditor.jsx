@@ -140,7 +140,8 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   onDirty,
   onSheetRenamed,
   onSheetsChange,
-   onShare,
+  onShare,
+  onFileDelete,
   onSheetDeleted,
   hideToolbar = false,
   height = '600px',
@@ -155,6 +156,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const savingRef = useRef(false);
   const dirtyRef = useRef(false);
   const fileInputRef = useRef(null);
+  const fileMenuRef = useRef(null);
   const [remountKey, setRemountKey] = useState(0);
   const [localData, setLocalData] = useState(() => initialData || blankGrid());
   // Excel-style sheet-tab context menu (portaled above Theta overlays)
@@ -211,6 +213,17 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   useEffect(() => {
     latestVersionRef.current = version;
   }, [version]);
+
+  useEffect(() => {
+    if (!showFileMenu) return;
+    const handleClickOutside = (e) => {
+      if (fileMenuRef.current && !fileMenuRef.current.contains(e.target)) {
+        setShowFileMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showFileMenu]);
 
   // Keep Univer popups/dropdowns above the Theta Sheets full-screen overlay (z=1650).
   // Formats / font / color menus use Radix portals with univer-z-[1080], which otherwise
@@ -723,29 +736,120 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
 
   return (
     <div style={{ height, width: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '0 0 8px' }}>
-        {!hideToolbar && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              onChange={handleImportFile}
-              style={{ display: 'none' }}
-            />
-            <button
-              type="button"
-              onClick={triggerImport}
-              style={{
-                padding: '6px 14px', background: '#f1f5f9', color: '#334155',
-                border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 12.5,
-                fontWeight: 600, cursor: 'pointer',
-              }}
-            >
-              Import file
-            </button>
-          </>
-        )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '0 8px 8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {(onShare || onFileDelete) && (
+            <div ref={fileMenuRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setShowFileMenu((open) => !open)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 12px',
+                  background: '#fff',
+                  color: '#334155',
+                  border: '1px solid #d1d5db',
+                  borderRadius: 7,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                File
+                <span style={{ fontSize: 10, lineHeight: 1 }}>▾</span>
+              </button>
+              {showFileMenu && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 6px)',
+                    left: 0,
+                    minWidth: 168,
+                    background: '#fff',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 8,
+                    boxShadow: '0 10px 28px rgba(15,23,42,0.12)',
+                    padding: 4,
+                    zIndex: 30,
+                  }}
+                >
+                  {onShare && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowFileMenu(false);
+                        onShare();
+                      }}
+                      style={{
+                        width: '100%',
+                        display: 'block',
+                        textAlign: 'left',
+                        padding: '8px 10px',
+                        border: 'none',
+                        borderRadius: 6,
+                        background: 'transparent',
+                        color: '#334155',
+                        fontSize: 13,
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Share
+                    </button>
+                  )}
+                  {onFileDelete && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        setShowFileMenu(false);
+                        onFileDelete(e);
+                      }}
+                      style={{
+                        width: '100%',
+                        display: 'block',
+                        textAlign: 'left',
+                        padding: '8px 10px',
+                        border: 'none',
+                        borderRadius: 6,
+                        background: 'transparent',
+                        color: '#dc2626',
+                        fontSize: 13,
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {!hideToolbar && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleImportFile}
+                style={{ display: 'none' }}
+              />
+              <button
+                type="button"
+                onClick={triggerImport}
+                style={{
+                  padding: '6px 14px', background: '#f1f5f9', color: '#334155',
+                  border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 12.5,
+                  fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                Import file
+              </button>
+            </>
+          )}
+        </div>
         <AddRecordButton
           disabled={!formConfig.ready}
           onClick={openAddRecordPanel}

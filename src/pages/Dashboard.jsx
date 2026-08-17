@@ -23,6 +23,7 @@ import {
   Link2,
   KeyRound,
   FolderOpen,
+  MoreVertical,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import useStore from "../store/useStore";
@@ -77,6 +78,34 @@ const REQUIRED_COLUMNS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+const ACCESS_ROLE_STYLES = {
+  owner: {
+    color: "#b45309",
+    background: "#fffbeb",
+    border: "1px solid #fde68a",
+    label: "Owner",
+  },
+  editor: {
+    color: "#1d4ed8",
+    background: "#eff6ff",
+    border: "1px solid #bfdbfe",
+    label: "Editor",
+  },
+  viewer: {
+    color: "#475569",
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    label: "Viewer",
+  },
+};
+
+const fileAccessRole = (fileEntry) => {
+  if (fileEntry?.access_role) return fileEntry.access_role;
+  if (fileEntry?.is_owner) return "owner";
+  if (fileEntry?.share_permission) return fileEntry.share_permission;
+  return null;
+};
+
 const formatDate = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -335,7 +364,6 @@ const Dashboard = () => {
   // ── Theta Sheets web browser (Browse Theta Sheets: pick from company file
   // library in durable storage — local ThetaFiles/ or Azure Blob) ─────────
   const [showThetaBrowser, setShowThetaBrowser] = useState(false);
-  const [thetaUploadedFileAccess, setThetaUploadedFileAccess] = useState(null);
   const [thetaBrowserStep, setThetaBrowserStep] = useState("pickFile"); // 'pickFile' | 'pickSheets'
   const [thetaSourcePicking, setThetaSourcePicking] = useState(false);
   const [thetaLibraryFiles, setThetaLibraryFiles] = useState([]);
@@ -344,11 +372,20 @@ const Dashboard = () => {
   const [thetaLibraryDeletingId, setThetaLibraryDeletingId] = useState(null);
   const [thetaBrowserFileName, setThetaBrowserFileName] = useState("");
   const [thetaBrowserFileId, setThetaBrowserFileId] = useState(null); // library file id being edited
+  const [thetaBrowserOpenedFile, setThetaBrowserOpenedFile] = useState(null);
   // ── File Sharing UI ─────────────────────────────────────────
   const [showShareModal, setShowShareModal] = useState(false);
   const [sharePermission, setSharePermission] = useState("viewer");
   const [generalAccess, setGeneralAccess] = useState("restricted");
   const [shareEmail, setShareEmail] = useState("");
+  const [shareUserResults, setShareUserResults] = useState([]);
+  const [shareUsersLoading, setShareUsersLoading] = useState(false);
+  const [selectedShareUser, setSelectedShareUser] = useState(null);
+  const [fileShares, setFileShares] = useState([]);
+  const [shareSubmitting, setShareSubmitting] = useState(false);
+  const shareSearchTimerRef = useRef(null);
+  const [thetaFileMenuId, setThetaFileMenuId] = useState(null);
+  const thetaFileMenuRef = useRef(null);
   const [thetaBrowserSheets, setThetaBrowserSheets] = useState([]); // [{name, headers, rows}]
   const [thetaBrowserSelected, setThetaBrowserSelected] = useState([]); // sheet names
   const [thetaBrowserPreviewIdx, setThetaBrowserPreviewIdx] = useState(0);
@@ -823,6 +860,20 @@ const Dashboard = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    if (!thetaFileMenuId) return;
+    const handleClickOutside = (e) => {
+      if (
+        thetaFileMenuRef.current &&
+        !thetaFileMenuRef.current.contains(e.target)
+      ) {
+        setThetaFileMenuId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [thetaFileMenuId]);
+
   // ─────────────────────────────────────────────────────────────────────────
   // Derived stats from history
   // ─────────────────────────────────────────────────────────────────────────
@@ -831,6 +882,9 @@ const Dashboard = () => {
   const failCount = history.filter(
     (h) => h.status === "error" || h.status === "failed",
   ).length;
+  const thetaOpenedLibraryFile =
+    thetaLibraryFiles.find((f) => f.id === thetaBrowserFileId) ||
+    thetaBrowserOpenedFile;
 
   // ─────────────────────────────────────────────────────────────────────────
   // File structure validation (client-side, before upload)
@@ -1196,6 +1250,7 @@ const Dashboard = () => {
     setThetaBrowserSelected([]);
     setThetaBrowserFileName("");
     setThetaBrowserFileId(null);
+    setThetaBrowserOpenedFile(null);
     setThetaJustSaved(false);
     setShowThetaReports(false);
     setShowOemCatalog(false);
@@ -1210,16 +1265,6 @@ const Dashboard = () => {
     setThetaLibraryUploading(true);
     try {
       await thetaFileService.upload(f);
-      const demoLinkToken = crypto.randomUUID();
-
-      setThetaUploadedFileAccess({
-        filename: f.name,
-        uploadedBy: "current-user",
-        owner: "current-user",
-        visibility: "restricted",
-        linkPermission: "viewer",
-        linkToken: demoLinkToken,
-      });
       toast.success(`${f.name} added to Theta Sheets library.`);
       await loadThetaLibraryFiles();
     } catch (err) {
@@ -1231,95 +1276,138 @@ const Dashboard = () => {
     }
   };
 
-  /* const handleThetaLibraryDelete = async (fileEntry, e) => {
+  const handleThetaLibraryDelete = async (fileEntry, e) => {
     e?.stopPropagation?.();
     if (!fileEntry?.id || thetaLibraryDeletingId || thetaSourcePicking) return;
-    const name = fileEntry.filename || 'this file';
-    if (!window.confirm(`Delete "${name}" from the company file library? This cannot be undone.`)) {
+    const name = fileEntry.filename || "this file";
+    if (
+      !window.confirm(
+        `Delete "${name}" from the company file library? This cannot be undone.`,
+      )
+    ) {
       return;
     }
     setThetaLibraryDeletingId(fileEntry.id);
     try {
       await thetaFileService.delete(fileEntry.id);
-      setThetaLibraryFiles((prev) => (prev || []).filter((f) => f.id !== fileEntry.id));
+      setThetaLibraryFiles((prev) =>
+        (prev || []).filter((item) => item.id !== fileEntry.id),
+      );
       toast.success(`${name} deleted.`);
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'Could not delete file.');
+      toast.error(err?.response?.data?.error || "Could not delete file.");
     } finally {
       setThetaLibraryDeletingId(null);
     }
-  }; */
+  };
 
-  // ============================================================
-  // US1 FRONTEND DEMO — Delete Owner File
-  // Backend delete is intentionally not called here.
-  // Replace/remove this demo function when backend ACL is ready.
-  // ============================================================
-  const handleThetaLibraryDelete = (fileEntry, e) => {
+  const loadFileShares = useCallback(async (fileId) => {
+    if (!fileId) {
+      setFileShares([]);
+      return;
+    }
+    try {
+      const data = await thetaFileService.listShares(fileId);
+      setFileShares(data.shares || []);
+    } catch {
+      setFileShares([]);
+    }
+  }, []);
+
+  const searchShareUsers = useCallback(async (query) => {
+    setShareUsersLoading(true);
+    try {
+      const data = await thetaFileService.searchShareUsers(query);
+      setShareUserResults(data.users || []);
+    } catch {
+      setShareUserResults([]);
+    } finally {
+      setShareUsersLoading(false);
+    }
+  }, []);
+
+  const openThetaShareModal = (fileEntry, e) => {
     e?.stopPropagation?.();
+    const target = fileEntry || thetaBrowserOpenedFile;
+    if (!target?.id && !thetaBrowserFileId) return;
+    const fileId = target?.id || thetaBrowserFileId;
+    setThetaFileMenuId(null);
+    setThetaBrowserFileName(target?.filename || thetaBrowserFileName || "");
+    setThetaBrowserFileId(fileId);
+    setGeneralAccess(target?.visibility || "restricted");
+    setSharePermission("viewer");
+    setShareEmail("");
+    setSelectedShareUser(null);
+    setShareUserResults([]);
+    setShowShareModal(true);
+    loadFileShares(fileId);
+    searchShareUsers("");
+  };
 
-    if (!fileEntry?.id || thetaLibraryDeletingId || thetaSourcePicking) {
+  const handleShareEmailChange = (value) => {
+    setShareEmail(value);
+    setSelectedShareUser(null);
+    if (shareSearchTimerRef.current) clearTimeout(shareSearchTimerRef.current);
+    shareSearchTimerRef.current = setTimeout(() => {
+      searchShareUsers(value);
+    }, 250);
+  };
+
+  const handleAddSharePerson = async () => {
+    const fileId = thetaBrowserFileId;
+    if (!fileId) return;
+    const typedEmail = (shareEmail || "").trim();
+    const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail);
+    if (!selectedShareUser?.id && !looksLikeEmail) {
+      toast.error("Select a person or enter a valid email address.");
       return;
     }
-
-    const name = fileEntry.filename || "this file";
-
-    const confirmed = window.confirm(
-      `Delete "${name}" from the company file library?`,
-    );
-
-    if (!confirmed) {
-      return;
+    setShareSubmitting(true);
+    try {
+      const result = await thetaFileService.share(fileId, {
+        userId: selectedShareUser?.id,
+        email: selectedShareUser?.email || typedEmail,
+        permission: sharePermission,
+      });
+      const who =
+        selectedShareUser?.name ||
+        selectedShareUser?.email ||
+        typedEmail;
+      if (result?.email_sent) {
+        toast.success(`Access email sent to ${who}.`);
+      } else {
+        toast.success(
+          result?.message ||
+            `Access saved for ${who}. They will see this file after login.`,
+        );
+      }
+      setShareEmail("");
+      setSelectedShareUser(null);
+      setShareUserResults([]);
+      await loadFileShares(fileId);
+      searchShareUsers("");
+    } catch (err) {
+      const status = err?.response?.status;
+      const apiError = err?.response?.data?.error;
+      if (status === 409) {
+        toast.error(apiError || "This person already has access to the file.");
+      } else {
+        toast.error(apiError || "Could not share this file.");
+      }
+    } finally {
+      setShareSubmitting(false);
     }
+  };
 
-    setThetaLibraryDeletingId(fileEntry.id);
-
-    // Frontend-only deletion for US1 demo.
-    setThetaLibraryFiles((prev) =>
-      (prev || []).filter((f) => f.id !== fileEntry.id),
-    );
-
-    // Clear frontend owner metadata if this is the current user's file.
-    if (thetaUploadedFileAccess?.filename === name) {
-      setThetaUploadedFileAccess(null);
-    }
-
-    toast.success(`${name} deleted.`);
-
-    setThetaLibraryDeletingId(null);
+  const toggleThetaFileMenu = (menuId, e) => {
+    e?.stopPropagation?.();
+    if (thetaSourcePicking || thetaLibraryDeletingId) return;
+    setThetaFileMenuId((prev) => (prev === menuId ? null : menuId));
   };
 
   const handleThetaBrowserPickFile = async (fileEntry) => {
-    // ============================================================
-    // US1 FRONTEND DEMO
-    // false = current user / Owner
-    // true  = simulate another user
-    // ============================================================
-    const DEMO_OTHER_USER = false;
     setThetaSourcePicking(true);
     try {
-      // ------------------------------------------------------------
-      // US1: Restricted files can only be opened by the Owner.
-      // Frontend demo only — backend ACL will be added later.
-      // ------------------------------------------------------------
-      const isCurrentUsersFile =
-        thetaUploadedFileAccess?.filename === fileEntry.filename;
-
-      const isRestrictedFile =
-        isCurrentUsersFile &&
-        thetaUploadedFileAccess?.visibility === "restricted";
-
-      const isOwner =
-        isCurrentUsersFile && thetaUploadedFileAccess?.owner === "current-user";
-
-      // ============================================================
-      // US1 FRONTEND DEMO — Other user access restriction
-      // Backend ACL will be connected later.
-      // ============================================================
-      if (DEMO_OTHER_USER) {
-        toast.error("You need access to open this file.");
-        return;
-      }
       const blob = await thetaFileService.downloadBlob(fileEntry.id);
       const buf = await blob.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
@@ -1329,15 +1417,23 @@ const Dashboard = () => {
       setThetaBrowserSheets(sheets);
       setThetaBrowserFileName(fileEntry.filename);
       setThetaBrowserFileId(fileEntry.id);
+      setThetaBrowserOpenedFile(fileEntry);
       // Default: select every sheet in the workbook (user can uncheck).
       setThetaBrowserSelected(sheets.map((s) => s.name));
       setThetaBrowserPreviewIdx(0);
       setThetaBrowserStep("pickSheets");
       setThetaJustSaved(false);
     } catch (err) {
-      toast.error(
-        "Could not read that file from the server. Please try again.",
-      );
+      const status = err?.response?.status;
+      const apiError = err?.response?.data?.error;
+      if (status === 403) {
+        toast.error(apiError || "You need access to open this file.");
+      } else {
+        toast.error(
+          apiError ||
+            "Could not read that file from the server. Please try again.",
+        );
+      }
     } finally {
       setThetaSourcePicking(false);
     }
@@ -1572,7 +1668,10 @@ const Dashboard = () => {
     setThetaBrowserSelected([]);
     setThetaBrowserFileName("");
     setThetaBrowserFileId(null);
+    setThetaBrowserOpenedFile(null);
     setThetaJustSaved(false);
+    setThetaFileMenuId(null);
+    setShowShareModal(false);
   };
 
   // Merge the selected (possibly edited) sheets into one grid, aligning
@@ -4985,8 +5084,114 @@ const Dashboard = () => {
                   }}
                 >
                   <div
-                    style={{ display: "flex", alignItems: "center", gap: 9 }}
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
                   >
+                    {isSheetsStep &&
+                      (() => {
+                        const openedFile =
+                          thetaLibraryFiles.find(
+                            (f) => f.id === thetaBrowserFileId,
+                          ) || thetaBrowserOpenedFile;
+                        const canDelete = Boolean(openedFile?.can_delete);
+                        const menuOpen = thetaFileMenuId === "header";
+                        return (
+                          <div
+                            ref={menuOpen ? thetaFileMenuRef : null}
+                            style={{ position: "relative" }}
+                          >
+                            <button
+                              type="button"
+                              onClick={(ev) =>
+                                toggleThetaFileMenu("header", ev)
+                              }
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "7px 12px",
+                                border: "1px solid #d1d5db",
+                                borderRadius: 7,
+                                background: "#fff",
+                                color: "#334155",
+                                fontSize: 13,
+                                fontWeight: 600,
+                                cursor: "pointer",
+                              }}
+                            >
+                              File
+                              <ChevronDown size={14} />
+                            </button>
+                            {menuOpen && (
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: "calc(100% + 6px)",
+                                  left: 0,
+                                  minWidth: 168,
+                                  background: "#fff",
+                                  border: "1px solid #e2e8f0",
+                                  borderRadius: 8,
+                                  boxShadow: "0 10px 28px rgba(15,23,42,0.12)",
+                                  padding: 4,
+                                  zIndex: 20,
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={(ev) =>
+                                    openThetaShareModal(openedFile, ev)
+                                  }
+                                  style={{
+                                    width: "100%",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                    padding: "8px 10px",
+                                    border: "none",
+                                    borderRadius: 6,
+                                    background: "transparent",
+                                    color: "#334155",
+                                    fontSize: 13,
+                                    fontWeight: 500,
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                  }}
+                                >
+                                  <Link2 size={14} />
+                                  Share
+                                </button>
+                                {canDelete && (
+                                  <button
+                                    type="button"
+                                    onClick={(ev) => {
+                                      setThetaFileMenuId(null);
+                                      handleThetaLibraryDelete(openedFile, ev);
+                                    }}
+                                    style={{
+                                      width: "100%",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 8,
+                                      padding: "8px 10px",
+                                      border: "none",
+                                      borderRadius: 6,
+                                      background: "transparent",
+                                      color: "#dc2626",
+                                      fontSize: 13,
+                                      fontWeight: 500,
+                                      cursor: "pointer",
+                                      textAlign: "left",
+                                    }}
+                                  >
+                                    <Trash2 size={14} />
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     <img
                       src={
                         isSheetsStep
@@ -5012,24 +5217,6 @@ const Dashboard = () => {
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 8 }}
                   >
-                    {isSheetsStep && (
-                      <button
-                        onClick={() => setShowShareModal(true)}
-                        style={{
-                          padding: "7px 14px",
-                          border: "1px solid #d1d5db",
-                          borderRadius: 7,
-                          background: "#fff",
-                          color: "#334155",
-                          fontSize: 13,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Share
-                      </button>
-                    )}
-
                     <button
                       onClick={closeThetaBrowser}
                       style={{
@@ -5127,20 +5314,99 @@ const Dashboard = () => {
                           Add people
                         </div>
 
-                        <input
-                          type="text"
-                          value={shareEmail}
-                          onChange={(e) => setShareEmail(e.target.value)}
-                          placeholder="Enter email address"
-                          style={{
-                            width: "100%",
-                            boxSizing: "border-box",
-                            padding: "10px 12px",
-                            border: "1px solid #cbd5e1",
-                            borderRadius: 7,
-                            fontSize: 13,
-                          }}
-                        />
+                        <div style={{ position: "relative" }}>
+                          <input
+                            type="text"
+                            value={
+                              selectedShareUser
+                                ? selectedShareUser.name ||
+                                  selectedShareUser.email
+                                : shareEmail
+                            }
+                            onChange={(e) =>
+                              handleShareEmailChange(e.target.value)
+                            }
+                            placeholder="Search a person or type an email"
+                            style={{
+                              width: "100%",
+                              boxSizing: "border-box",
+                              padding: "10px 12px",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: 7,
+                              fontSize: 13,
+                            }}
+                          />
+                          {(shareUsersLoading ||
+                            shareUserResults.length > 0) &&
+                            !selectedShareUser && (
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: "calc(100% + 4px)",
+                                  left: 0,
+                                  right: 0,
+                                  maxHeight: 180,
+                                  overflowY: "auto",
+                                  background: "#fff",
+                                  border: "1px solid #e2e8f0",
+                                  borderRadius: 8,
+                                  boxShadow: "0 10px 24px rgba(15,23,42,0.12)",
+                                  zIndex: 20,
+                                }}
+                              >
+                                {shareUsersLoading ? (
+                                  <div
+                                    style={{
+                                      padding: "10px 12px",
+                                      fontSize: 12,
+                                      color: "#94a3b8",
+                                    }}
+                                  >
+                                    Searching…
+                                  </div>
+                                ) : (
+                                  shareUserResults.map((u) => (
+                                    <button
+                                      key={u.id}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedShareUser(u);
+                                        setShareEmail(u.email || "");
+                                        setShareUserResults([]);
+                                      }}
+                                      style={{
+                                        width: "100%",
+                                        textAlign: "left",
+                                        padding: "8px 12px",
+                                        border: "none",
+                                        background: "transparent",
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: 13,
+                                          fontWeight: 600,
+                                          color: "#0f172a",
+                                        }}
+                                      >
+                                        {u.name || u.email}
+                                      </div>
+                                      <div
+                                        style={{
+                                          fontSize: 12,
+                                          color: "#64748b",
+                                          marginTop: 2,
+                                        }}
+                                      >
+                                        {u.email}
+                                      </div>
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                        </div>
                       </div>
 
                       {/* People with access */}
@@ -5182,7 +5448,7 @@ const Dashboard = () => {
                                 marginTop: 3,
                               }}
                             >
-                              Current user
+                              {user?.name || user?.email || "Owner"}
                             </div>
                           </div>
 
@@ -5196,6 +5462,51 @@ const Dashboard = () => {
                             Owner
                           </div>
                         </div>
+                        {fileShares.map((share) => (
+                          <div
+                            key={share.id || share.user_id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "10px 0",
+                              borderTop: "1px solid #f1f5f9",
+                            }}
+                          >
+                            <div>
+                              <div
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: "#0f172a",
+                                }}
+                              >
+                                {share.name || share.email}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 12,
+                                  color: "#64748b",
+                                  marginTop: 3,
+                                }}
+                              >
+                                {share.email}
+                              </div>
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: "#64748b",
+                                textTransform: "capitalize",
+                              }}
+                            >
+                              {share.pending
+                                ? `Invited · ${share.permission || "viewer"}`
+                                : share.permission || "viewer"}
+                            </div>
+                          </div>
+                        ))}
                       </div>
 
                       {/* Permission */}
@@ -5305,18 +5616,36 @@ const Dashboard = () => {
 
                         <button
                           type="button"
-                          onClick={() => setShowShareModal(false)}
+                          disabled={shareSubmitting}
+                          onClick={async () => {
+                            const typedEmail = (shareEmail || "").trim();
+                            const looksLikeEmail =
+                              /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail);
+                            if (selectedShareUser || looksLikeEmail) {
+                              await handleAddSharePerson();
+                              return;
+                            }
+                            setShowShareModal(false);
+                          }}
                           style={{
                             padding: "9px 16px",
                             border: "none",
                             borderRadius: 7,
                             background: "#16a34a",
                             color: "#fff",
-                            cursor: "pointer",
+                            cursor: shareSubmitting ? "default" : "pointer",
                             fontWeight: 600,
+                            opacity: shareSubmitting ? 0.7 : 1,
                           }}
                         >
-                          Done
+                          {shareSubmitting
+                            ? "Sharing…"
+                            : selectedShareUser ||
+                                /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+                                  (shareEmail || "").trim(),
+                                )
+                              ? "Add"
+                              : "Done"}
                         </button>
                       </div>
                     </div>
@@ -5401,9 +5730,14 @@ const Dashboard = () => {
                         {serverFiles.map((fileEntry) => {
                           const isDeleting =
                             thetaLibraryDeletingId === fileEntry.id;
-                          const isOwner =
-                            thetaUploadedFileAccess?.filename ===
-                            fileEntry.filename;
+                          const canDelete = Boolean(fileEntry.can_delete);
+                          const canShare = Boolean(
+                            fileEntry.can_share || fileEntry.is_owner,
+                          );
+                          const accessRole = fileAccessRole(fileEntry);
+                          const roleStyle = accessRole
+                            ? ACCESS_ROLE_STYLES[accessRole]
+                            : null;
                           return (
                             <div
                               key={fileEntry.id}
@@ -5466,43 +5800,138 @@ const Dashboard = () => {
                               >
                                 {formatDate(fileEntry.modified_at)}
                               </span>
-                              {isOwner && (
-                                <button
-                                  type="button"
-                                  title="Delete file"
-                                  aria-label={`Delete ${fileEntry.filename || "file"}`}
-                                  disabled={
-                                    isDeleting ||
-                                    thetaSourcePicking ||
-                                    Boolean(thetaLibraryDeletingId)
-                                  }
-                                  onClick={(ev) =>
-                                    handleThetaLibraryDelete(fileEntry, ev)
-                                  }
+                              {roleStyle && (
+                                <span
                                   style={{
+                                    fontSize: 10.5,
+                                    fontWeight: 600,
+                                    color: roleStyle.color,
+                                    background: roleStyle.background,
+                                    border: roleStyle.border,
+                                    borderRadius: 999,
+                                    padding: "2px 7px",
                                     flexShrink: 0,
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    width: 30,
-                                    height: 30,
-                                    borderRadius: 7,
-                                    border: "1px solid #fee2e2",
-                                    background: "#fff",
-                                    color: "#dc2626",
-                                    cursor:
-                                      isDeleting || thetaSourcePicking
-                                        ? "default"
-                                        : "pointer",
-                                    padding: 0,
                                   }}
                                 >
-                                  {isDeleting ? (
-                                    <Loader2 size={14} className="spinning" />
-                                  ) : (
-                                    <Trash2 size={14} />
+                                  {roleStyle.label}
+                                </span>
+                              )}
+                              {(canShare || canDelete) && (
+                                <div
+                                  ref={
+                                    thetaFileMenuId === fileEntry.id
+                                      ? thetaFileMenuRef
+                                      : null
+                                  }
+                                  style={{
+                                    position: "relative",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    title="File menu"
+                                    aria-label={`File menu for ${fileEntry.filename || "file"}`}
+                                    disabled={isDeleting || thetaSourcePicking}
+                                    onClick={(ev) =>
+                                      toggleThetaFileMenu(fileEntry.id, ev)
+                                    }
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      width: 30,
+                                      height: 30,
+                                      borderRadius: 7,
+                                      border: "1px solid #e2e8f0",
+                                      background: "#fff",
+                                      color: "#334155",
+                                      cursor:
+                                        isDeleting || thetaSourcePicking
+                                          ? "default"
+                                          : "pointer",
+                                      padding: 0,
+                                    }}
+                                  >
+                                    {isDeleting ? (
+                                      <Loader2 size={14} className="spinning" />
+                                    ) : (
+                                      <MoreVertical size={14} />
+                                    )}
+                                  </button>
+                                  {thetaFileMenuId === fileEntry.id && (
+                                    <div
+                                      style={{
+                                        position: "absolute",
+                                        top: "calc(100% + 4px)",
+                                        right: 0,
+                                        minWidth: 168,
+                                        background: "#fff",
+                                        border: "1px solid #e2e8f0",
+                                        borderRadius: 8,
+                                        boxShadow:
+                                          "0 10px 28px rgba(15,23,42,0.12)",
+                                        padding: 4,
+                                        zIndex: 20,
+                                      }}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={(ev) =>
+                                          openThetaShareModal(fileEntry, ev)
+                                        }
+                                        style={{
+                                          width: "100%",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: 8,
+                                          padding: "8px 10px",
+                                          border: "none",
+                                          borderRadius: 6,
+                                          background: "transparent",
+                                          color: "#334155",
+                                          fontSize: 13,
+                                          fontWeight: 500,
+                                          cursor: "pointer",
+                                          textAlign: "left",
+                                        }}
+                                      >
+                                        <Link2 size={14} />
+                                        Share
+                                      </button>
+                                      {canDelete && (
+                                        <button
+                                          type="button"
+                                          onClick={(ev) => {
+                                            setThetaFileMenuId(null);
+                                            handleThetaLibraryDelete(
+                                              fileEntry,
+                                              ev,
+                                            );
+                                          }}
+                                          style={{
+                                            width: "100%",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 8,
+                                            padding: "8px 10px",
+                                            border: "none",
+                                            borderRadius: 6,
+                                            background: "transparent",
+                                            color: "#dc2626",
+                                            fontSize: 13,
+                                            fontWeight: 500,
+                                            cursor: "pointer",
+                                            textAlign: "left",
+                                          }}
+                                        >
+                                          <Trash2 size={14} />
+                                          Delete
+                                        </button>
+                                      )}
+                                    </div>
                                   )}
-                                </button>
+                                </div>
                               )}
                             </div>
                           );
@@ -5676,6 +6105,18 @@ const Dashboard = () => {
                               sheets: thetaBrowserSheets,
                             }}
                             hideToolbar
+                            onShare={() =>
+                              openThetaShareModal(thetaOpenedLibraryFile)
+                            }
+                            onFileDelete={
+                              thetaOpenedLibraryFile?.can_delete
+                                ? (ev) =>
+                                    handleThetaLibraryDelete(
+                                      thetaOpenedLibraryFile,
+                                      ev,
+                                    )
+                                : undefined
+                            }
                             onDirty={() => setThetaJustSaved(false)}
                             onSheetRenamed={handleThetaSheetRenamed}
                             onSheetsChange={handleThetaSheetsChange}
