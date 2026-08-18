@@ -885,6 +885,11 @@ const Dashboard = () => {
   const thetaOpenedLibraryFile =
     thetaLibraryFiles.find((f) => f.id === thetaBrowserFileId) ||
     thetaBrowserOpenedFile;
+  const isShareOwner = Boolean(thetaOpenedLibraryFile?.is_owner);
+  const canTransferOwnership = Boolean(
+    thetaOpenedLibraryFile?.can_transfer_ownership ||
+      thetaOpenedLibraryFile?.is_owner,
+  );
 
   // ─────────────────────────────────────────────────────────────────────────
   // File structure validation (client-side, before upload)
@@ -1330,6 +1335,17 @@ const Dashboard = () => {
     e?.stopPropagation?.();
     const target = fileEntry || thetaBrowserOpenedFile;
     if (!target?.id && !thetaBrowserFileId) return;
+    if (
+      target &&
+      !(
+        target.can_share ||
+        target.is_owner ||
+        target.can_transfer_ownership
+      )
+    ) {
+      toast.error("Only the owner can share this file.");
+      return;
+    }
     const fileId = target?.id || thetaBrowserFileId;
     setThetaFileMenuId(null);
     setThetaBrowserFileName(target?.filename || thetaBrowserFileName || "");
@@ -1396,6 +1412,70 @@ const Dashboard = () => {
       }
     } finally {
       setShareSubmitting(false);
+    }
+  };
+
+  const handleShareRoleAction = async (share, action) => {
+    const fileId = thetaBrowserFileId;
+    if (!fileId || !share) return;
+    if (action === "viewer" || action === "editor") {
+      if (!isShareOwner) return;
+      if ((share.permission || "viewer") === action) return;
+      setShareSubmitting(true);
+      try {
+        await thetaFileService.updateShare(fileId, share.user_id, action);
+        toast.success("Permission updated.");
+        await loadFileShares(fileId);
+      } catch (err) {
+        toast.error(err?.response?.data?.error || "Could not update permission.");
+      } finally {
+        setShareSubmitting(false);
+      }
+      return;
+    }
+    if (action === "remove") {
+      if (!isShareOwner) return;
+      const who = share.name || share.email || "this person";
+      if (!window.confirm(`Remove access for ${who}?`)) return;
+      setShareSubmitting(true);
+      try {
+        await thetaFileService.removeShare(fileId, share.user_id);
+        toast.success("Access removed.");
+        await loadFileShares(fileId);
+      } catch (err) {
+        toast.error(err?.response?.data?.error || "Could not remove access.");
+      } finally {
+        setShareSubmitting(false);
+      }
+      return;
+    }
+    if (action === "make_owner") {
+      if (!canTransferOwnership) return;
+      if (share.user_id && String(share.user_id) === String(user?.id || "")) {
+        toast.error("You cannot transfer ownership to yourself.");
+        return;
+      }
+      const who = share.name || share.email || "this person";
+      if (
+        !window.confirm(
+          `Make ${who} the owner? The current owner will become an Editor.`,
+        )
+      ) {
+        return;
+      }
+      setShareSubmitting(true);
+      try {
+        await thetaFileService.transferOwnership(fileId, share.user_id);
+        toast.success(`Ownership transferred to ${who}.`);
+        await loadThetaLibraryFiles();
+        await loadFileShares(fileId);
+      } catch (err) {
+        toast.error(
+          err?.response?.data?.error || "Could not transfer ownership.",
+        );
+      } finally {
+        setShareSubmitting(false);
+      }
     }
   };
 
@@ -5093,6 +5173,11 @@ const Dashboard = () => {
                             (f) => f.id === thetaBrowserFileId,
                           ) || thetaBrowserOpenedFile;
                         const canDelete = Boolean(openedFile?.can_delete);
+                        const canShare = Boolean(
+                          openedFile?.can_share ||
+                            openedFile?.is_owner ||
+                            openedFile?.can_transfer_ownership,
+                        );
                         const menuOpen = thetaFileMenuId === "header";
                         return (
                           <div
@@ -5136,6 +5221,7 @@ const Dashboard = () => {
                                   zIndex: 20,
                                 }}
                               >
+                                {canShare && (
                                 <button
                                   type="button"
                                   onClick={(ev) =>
@@ -5160,6 +5246,7 @@ const Dashboard = () => {
                                   <Link2 size={14} />
                                   Share
                                 </button>
+                                )}
                                 {canDelete && (
                                   <button
                                     type="button"
@@ -5302,6 +5389,7 @@ const Dashboard = () => {
                       </div>
 
                       {/* People */}
+                      {isShareOwner && (
                       <div style={{ marginBottom: 20 }}>
                         <div
                           style={{
@@ -5408,6 +5496,7 @@ const Dashboard = () => {
                             )}
                         </div>
                       </div>
+                      )}
 
                       {/* People with access */}
                       <div style={{ marginBottom: 20 }}>
@@ -5422,6 +5511,7 @@ const Dashboard = () => {
                           People with access
                         </div>
 
+                        {isShareOwner && (
                         <div
                           style={{
                             display: "flex",
@@ -5462,7 +5552,10 @@ const Dashboard = () => {
                             Owner
                           </div>
                         </div>
-                        {fileShares.map((share) => (
+                        )}
+                        {fileShares.map((share) => {
+                          const currentPerm = share.permission || "viewer";
+                          return (
                           <div
                             key={share.id || share.user_id}
                             style={{
@@ -5493,6 +5586,7 @@ const Dashboard = () => {
                                 {share.email}
                               </div>
                             </div>
+                            {share.pending ? (
                             <div
                               style={{
                                 fontSize: 13,
@@ -5501,15 +5595,79 @@ const Dashboard = () => {
                                 textTransform: "capitalize",
                               }}
                             >
-                              {share.pending
-                                ? `Invited · ${share.permission || "viewer"}`
-                                : share.permission || "viewer"}
+                              {`Invited · ${currentPerm}`}
                             </div>
+                            ) : isShareOwner ? (
+                              <select
+                                value={currentPerm}
+                                disabled={shareSubmitting}
+                                onChange={(e) => {
+                                  const next = e.target.value;
+                                  e.target.value = currentPerm;
+                                  handleShareRoleAction(share, next);
+                                }}
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: "#334155",
+                                  textTransform: "capitalize",
+                                  border: "1px solid #e2e8f0",
+                                  borderRadius: 6,
+                                  padding: "4px 8px",
+                                  background: "#fff",
+                                  maxWidth: 160,
+                                }}
+                              >
+                                <option value="viewer">Viewer</option>
+                                <option value="editor">Editor</option>
+                                {canTransferOwnership && (
+                                  <option value="make_owner">
+                                    Make owner
+                                  </option>
+                                )}
+                                <option value="remove">Remove</option>
+                              </select>
+                            ) : canTransferOwnership && share.user_id ? (
+                              <button
+                                type="button"
+                                disabled={shareSubmitting}
+                                onClick={() =>
+                                  handleShareRoleAction(share, "make_owner")
+                                }
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: "#334155",
+                                  border: "1px solid #e2e8f0",
+                                  borderRadius: 6,
+                                  padding: "4px 10px",
+                                  background: "#fff",
+                                  cursor: shareSubmitting
+                                    ? "default"
+                                    : "pointer",
+                                }}
+                              >
+                                Make owner
+                              </button>
+                            ) : (
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: "#64748b",
+                                textTransform: "capitalize",
+                              }}
+                            >
+                              {currentPerm}
+                            </div>
+                            )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
 
                       {/* Permission */}
+                      {isShareOwner && (
                       <div style={{ marginBottom: 20 }}>
                         <div
                           style={{
@@ -5538,6 +5696,7 @@ const Dashboard = () => {
                           <option value="editor">Editor</option>
                         </select>
                       </div>
+                      )}
 
                       {/* General access */}
                       <div style={{ marginBottom: 24 }}>
@@ -5732,7 +5891,9 @@ const Dashboard = () => {
                             thetaLibraryDeletingId === fileEntry.id;
                           const canDelete = Boolean(fileEntry.can_delete);
                           const canShare = Boolean(
-                            fileEntry.can_share || fileEntry.is_owner,
+                            fileEntry.can_share ||
+                              fileEntry.is_owner ||
+                              fileEntry.can_transfer_ownership,
                           );
                           const accessRole = fileAccessRole(fileEntry);
                           const roleStyle = accessRole
@@ -5875,6 +6036,7 @@ const Dashboard = () => {
                                         zIndex: 20,
                                       }}
                                     >
+                                      {canShare && (
                                       <button
                                         type="button"
                                         onClick={(ev) =>
@@ -5899,6 +6061,7 @@ const Dashboard = () => {
                                         <Link2 size={14} />
                                         Share
                                       </button>
+                                      )}
                                       {canDelete && (
                                         <button
                                           type="button"
@@ -6105,8 +6268,13 @@ const Dashboard = () => {
                               sheets: thetaBrowserSheets,
                             }}
                             hideToolbar
-                            onShare={() =>
-                              openThetaShareModal(thetaOpenedLibraryFile)
+                            onShare={
+                              thetaOpenedLibraryFile?.can_share ||
+                              thetaOpenedLibraryFile?.is_owner ||
+                              thetaOpenedLibraryFile?.can_transfer_ownership
+                                ? () =>
+                                    openThetaShareModal(thetaOpenedLibraryFile)
+                                : undefined
                             }
                             onFileDelete={
                               thetaOpenedLibraryFile?.can_delete

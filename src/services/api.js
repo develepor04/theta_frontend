@@ -395,6 +395,25 @@ export const thetaFileService = {
     });
     return response.data;
   },
+
+  updateShare: async (fileId, userId, permission) => {
+    const response = await api.patch(`/theta-files/${fileId}/shares/${userId}`, {
+      permission,
+    });
+    return response.data;
+  },
+
+  removeShare: async (fileId, userId) => {
+    const response = await api.delete(`/theta-files/${fileId}/shares/${userId}`);
+    return response.data;
+  },
+
+  transferOwnership: async (fileId, userId) => {
+    const response = await api.post(`/theta-files/${fileId}/transfer-ownership`, {
+      user_id: userId,
+    });
+    return response.data;
+  },
 };
 
 // ==================== STATS SERVICES ====================
