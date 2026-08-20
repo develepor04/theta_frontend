@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import {
   Upload,
@@ -32,6 +32,7 @@ import {
   historyService,
   sheetService,
   thetaFileService,
+  thetaFileShareUrl,
 } from "../services/api";
 import SCurveAnalytics from "../components/SCurveAnalytics";
 import ProcessingResultModal from "../components/ProcessingResultModal";
@@ -99,10 +100,45 @@ const ACCESS_ROLE_STYLES = {
   },
 };
 
-const fileAccessRole = (fileEntry) => {
-  if (fileEntry?.access_role) return fileEntry.access_role;
-  if (fileEntry?.is_owner) return "owner";
-  if (fileEntry?.share_permission) return fileEntry.share_permission;
+const GENERAL_ACCESS_OPTIONS = [
+  {
+    value: "restricted",
+    label: "Restricted",
+    help: "Only people with access can open with the link.",
+  },
+  {
+    value: "company",
+    label: "Company",
+    help: "Anyone in this company with the link.",
+  },
+  {
+    value: "anyone",
+    label: "Anyone with the link",
+    help: "Anyone on the internet with the link.",
+  },
+];
+
+const getInitials = (value) => {
+  const str = String(value || "").trim();
+  if (!str) return "?";
+  const parts = str
+    .split(/[\s@._-]+/g)
+    .filter(Boolean)
+    .slice(0, 2);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return parts.map((p) => p[0].toUpperCase()).join("");
+};
+
+const fileAccessRole = (fileEntry, currentUserId) => {
+  const uid = String(currentUserId || "");
+  const uploadedBy = String(fileEntry?.uploaded_by || "");
+  if (uid && uploadedBy && uid === uploadedBy) return "owner";
+  const role = fileEntry?.access_role;
+  if (role === "owner") return null;
+  if (role === "editor" || role === "viewer") return role;
+  if (fileEntry?.share_permission === "editor" || fileEntry?.share_permission === "viewer") {
+    return fileEntry.share_permission;
+  }
   return null;
 };
 
@@ -313,6 +349,7 @@ const INGEST_PRIMARY_DISABLED = "#a7f3d0";
 // ─────────────────────────────────────────────────────────────────────────────
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { shareToken } = useParams();
   const {
     user,
     uploadedFiles,
@@ -377,11 +414,15 @@ const Dashboard = () => {
   const [showShareModal, setShowShareModal] = useState(false);
   const [sharePermission, setSharePermission] = useState("viewer");
   const [generalAccess, setGeneralAccess] = useState("restricted");
+  const [shareLinkPermission, setShareLinkPermission] = useState("viewer");
+  const [shareLinkToken, setShareLinkToken] = useState("");
+  const [thetaShareLinkToken, setThetaShareLinkToken] = useState("");
   const [shareEmail, setShareEmail] = useState("");
   const [shareUserResults, setShareUserResults] = useState([]);
   const [shareUsersLoading, setShareUsersLoading] = useState(false);
   const [selectedShareUser, setSelectedShareUser] = useState(null);
   const [fileShares, setFileShares] = useState([]);
+  const [fileShareOwner, setFileShareOwner] = useState(null);
   const [shareSubmitting, setShareSubmitting] = useState(false);
   const shareSearchTimerRef = useRef(null);
   const [thetaFileMenuId, setThetaFileMenuId] = useState(null);
@@ -885,11 +926,81 @@ const Dashboard = () => {
   const thetaOpenedLibraryFile =
     thetaLibraryFiles.find((f) => f.id === thetaBrowserFileId) ||
     thetaBrowserOpenedFile;
-  const isShareOwner = Boolean(thetaOpenedLibraryFile?.is_owner);
+  const isShareOwner = Boolean(
+    (user?.id &&
+      thetaOpenedLibraryFile?.uploaded_by &&
+      String(thetaOpenedLibraryFile.uploaded_by) === String(user.id)) ||
+      thetaOpenedLibraryFile?.is_owner ||
+      thetaOpenedLibraryFile?.can_share,
+  );
   const canTransferOwnership = Boolean(
     thetaOpenedLibraryFile?.can_transfer_ownership ||
       thetaOpenedLibraryFile?.is_owner,
   );
+  const canChangeGeneralAccess = Boolean(
+    thetaOpenedLibraryFile?.can_change_general_access ||
+      isShareOwner ||
+      canTransferOwnership,
+  );
+  // Owner/Editor can edit+save. Viewer is view-only (API can_edit=false).
+  const canEditOpenedFile = (() => {
+    const f = thetaOpenedLibraryFile;
+    if (!f) return true;
+    if (typeof f.can_edit === "boolean") return f.can_edit === true;
+    const role = f.access_role || fileAccessRole(f, user?.id);
+    return role === "owner" || role === "editor" || f.is_owner === true;
+  })();
+  const openedAccessRoleLabel = (() => {
+    const f = thetaOpenedLibraryFile;
+    if (!f) return null;
+    if (f.is_owner || f.access_role === "owner") return "Owner";
+    if (f.access_role === "editor" || f.share_permission === "editor") {
+      return "Editor";
+    }
+    if (
+      f.access_role === "viewer" ||
+      f.share_permission === "viewer" ||
+      f.can_edit === false
+    ) {
+      return "View only";
+    }
+    if (canEditOpenedFile) return "Editor";
+    return "View only";
+  })();
+  const skipLiveSheetMerge = Boolean(
+    thetaOpenedLibraryFile &&
+      (thetaOpenedLibraryFile.same_company === false ||
+        (user?.company_id &&
+          thetaOpenedLibraryFile.company_id &&
+          String(thetaOpenedLibraryFile.company_id) !==
+            String(user.company_id))),
+  );
+  const isFileRecordOwner =
+    Boolean(fileShareOwner?.id) &&
+    String(fileShareOwner.id) === String(user?.id || "");
+  const canAddSharePeople = isShareOwner || isFileRecordOwner;
+  const sharePickerBlockedIds = new Set(
+    [user?.id, fileShareOwner?.id]
+      .filter(Boolean)
+      .map((id) => String(id)),
+  );
+  const visibleShareUserResults = shareUserResults.filter(
+    (u) => !sharePickerBlockedIds.has(String(u.id || "")),
+  );
+  const existingShareToUpdate = (() => {
+    const pid = String(selectedShareUser?.id || "");
+    const email = String(
+      selectedShareUser?.email || shareEmail || "",
+    )
+      .trim()
+      .toLowerCase();
+    return (fileShares || []).find((s) => {
+      if (s?.pending) return false;
+      if (pid && String(s.user_id || "") === pid) return true;
+      if (email && String(s.email || "").toLowerCase() === email) return true;
+      return false;
+    });
+  })();
 
   // ─────────────────────────────────────────────────────────────────────────
   // File structure validation (client-side, before upload)
@@ -1282,8 +1393,13 @@ const Dashboard = () => {
   };
 
   const handleThetaLibraryDelete = async (fileEntry, e) => {
+    e?.preventDefault?.();
     e?.stopPropagation?.();
     if (!fileEntry?.id || thetaLibraryDeletingId || thetaSourcePicking) return;
+    if (!fileEntry.can_delete) {
+      toast.error("You do not have permission to delete this file.");
+      return;
+    }
     const name = fileEntry.filename || "this file";
     if (
       !window.confirm(
@@ -1298,9 +1414,30 @@ const Dashboard = () => {
       setThetaLibraryFiles((prev) =>
         (prev || []).filter((item) => item.id !== fileEntry.id),
       );
+      if (thetaBrowserFileId === fileEntry.id) {
+        setThetaBrowserStep("pickFile");
+        setThetaBrowserSheets([]);
+        setThetaBrowserSelected([]);
+        setThetaBrowserFileName("");
+        setThetaBrowserFileId(null);
+        setThetaBrowserOpenedFile(null);
+        setThetaJustSaved(false);
+        setShowShareModal(false);
+      }
+      setThetaFileMenuId(null);
       toast.success(`${name} deleted.`);
     } catch (err) {
-      toast.error(err?.response?.data?.error || "Could not delete file.");
+      const status = err?.response?.status;
+      if (status === 404) {
+        toast.error("File not found.");
+      } else if (status === 403) {
+        toast.error(
+          err?.response?.data?.error ||
+            "You do not have permission to delete this file.",
+        );
+      } else {
+        toast.error(err?.response?.data?.error || "Could not delete file.");
+      }
     } finally {
       setThetaLibraryDeletingId(null);
     }
@@ -1309,13 +1446,23 @@ const Dashboard = () => {
   const loadFileShares = useCallback(async (fileId) => {
     if (!fileId) {
       setFileShares([]);
+      setFileShareOwner(null);
       return;
     }
     try {
       const data = await thetaFileService.listShares(fileId);
       setFileShares(data.shares || []);
-    } catch {
+      setFileShareOwner(data.owner || null);
+      if (data.visibility) setGeneralAccess(data.visibility);
+      if (data.link_permission) setShareLinkPermission(data.link_permission);
+      if (data.link_token) setShareLinkToken(data.link_token);
+    } catch (err) {
       setFileShares([]);
+      setFileShareOwner(null);
+      const apiError = err?.response?.data?.error;
+      if (apiError) {
+        toast.error(apiError);
+      }
     }
   }, []);
 
@@ -1324,14 +1471,17 @@ const Dashboard = () => {
     try {
       const data = await thetaFileService.searchShareUsers(query);
       setShareUserResults(data.users || []);
+      return data.users || [];
     } catch {
       setShareUserResults([]);
+      return [];
     } finally {
       setShareUsersLoading(false);
     }
   }, []);
 
   const openThetaShareModal = (fileEntry, e) => {
+    e?.preventDefault?.();
     e?.stopPropagation?.();
     const target = fileEntry || thetaBrowserOpenedFile;
     if (!target?.id && !thetaBrowserFileId) return;
@@ -1340,7 +1490,8 @@ const Dashboard = () => {
       !(
         target.can_share ||
         target.is_owner ||
-        target.can_transfer_ownership
+        target.can_transfer_ownership ||
+        target.can_change_general_access
       )
     ) {
       toast.error("Only the owner can share this file.");
@@ -1351,6 +1502,8 @@ const Dashboard = () => {
     setThetaBrowserFileName(target?.filename || thetaBrowserFileName || "");
     setThetaBrowserFileId(fileId);
     setGeneralAccess(target?.visibility || "restricted");
+    setShareLinkPermission(target?.link_permission || "viewer");
+    setShareLinkToken(target?.link_token || "");
     setSharePermission("viewer");
     setShareEmail("");
     setSelectedShareUser(null);
@@ -1374,21 +1527,87 @@ const Dashboard = () => {
     if (!fileId) return;
     const typedEmail = (shareEmail || "").trim();
     const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail);
-    if (!selectedShareUser?.id && !looksLikeEmail) {
+
+    let person = selectedShareUser;
+    if (!person?.id && !looksLikeEmail && typedEmail) {
+      const q = typedEmail.toLowerCase();
+      const fromVisible = (visibleShareUserResults || []).find(
+        (u) =>
+          String(u.name || "")
+            .trim()
+            .toLowerCase() === q ||
+          String(u.email || "")
+            .trim()
+            .toLowerCase() === q,
+      );
+      if (fromVisible) {
+        person = fromVisible;
+      } else {
+        const searched = await searchShareUsers(typedEmail);
+        person =
+          (searched || []).find(
+            (u) =>
+              String(u.name || "")
+                .trim()
+                .toLowerCase() === q ||
+              String(u.email || "")
+                .trim()
+                .toLowerCase() === q,
+          ) ||
+          ((searched || []).length === 1 ? searched[0] : null);
+      }
+      if (person) {
+        setSelectedShareUser(person);
+        setShareEmail(person.email || typedEmail);
+      }
+    }
+
+    if (!person?.id && !looksLikeEmail) {
       toast.error("Select a person or enter a valid email address.");
       return;
     }
+    const existing = (fileShares || []).find((s) => {
+      if (s?.pending) return false;
+      const pid = String(person?.id || "");
+      const email = String(person?.email || typedEmail || "")
+        .trim()
+        .toLowerCase();
+      if (pid && String(s.user_id || "") === pid) return true;
+      if (email && String(s.email || "").toLowerCase() === email) return true;
+      return false;
+    });
     setShareSubmitting(true);
     try {
+      const who = person?.name || person?.email || typedEmail;
+      if (existing?.user_id) {
+        if ((existing.permission || "viewer") === sharePermission) {
+          toast.success(
+            `${who} is already a ${sharePermission}. Change the role dropdown to update.`,
+          );
+        } else {
+          await thetaFileService.updateShare(
+            fileId,
+            existing.user_id,
+            sharePermission,
+          );
+          toast.success(
+            sharePermission === "editor"
+              ? `Updated ${who} to Editor.`
+              : `Updated ${who} to Viewer.`,
+          );
+        }
+        setShareEmail("");
+        setSelectedShareUser(null);
+        setShareUserResults([]);
+        await loadFileShares(fileId);
+        searchShareUsers("");
+        return;
+      }
       const result = await thetaFileService.share(fileId, {
-        userId: selectedShareUser?.id,
-        email: selectedShareUser?.email || typedEmail,
+        userId: person?.id,
+        email: person?.email || typedEmail,
         permission: sharePermission,
       });
-      const who =
-        selectedShareUser?.name ||
-        selectedShareUser?.email ||
-        typedEmail;
       if (result?.email_sent) {
         toast.success(`Access email sent to ${who}.`);
       } else {
@@ -1405,6 +1624,12 @@ const Dashboard = () => {
     } catch (err) {
       const status = err?.response?.status;
       const apiError = err?.response?.data?.error;
+      // Always refresh so an already-saved share still appears in the list.
+      try {
+        await loadFileShares(fileId);
+      } catch {
+        /* ignore */
+      }
       if (status === 409) {
         toast.error(apiError || "This person already has access to the file.");
       } else {
@@ -1418,13 +1643,25 @@ const Dashboard = () => {
   const handleShareRoleAction = async (share, action) => {
     const fileId = thetaBrowserFileId;
     if (!fileId || !share) return;
+    const canManageSharePeople = isShareOwner || isFileRecordOwner;
     if (action === "viewer" || action === "editor") {
-      if (!isShareOwner) return;
+      if (!canManageSharePeople) {
+        toast.error("Only the owner can change sharing permissions.");
+        return;
+      }
+      if (!share.user_id) {
+        toast.error("This person does not have an account share to update yet.");
+        return;
+      }
       if ((share.permission || "viewer") === action) return;
       setShareSubmitting(true);
       try {
         await thetaFileService.updateShare(fileId, share.user_id, action);
-        toast.success("Permission updated.");
+        toast.success(
+          action === "editor"
+            ? "Updated to Editor."
+            : "Updated to Viewer.",
+        );
         await loadFileShares(fileId);
       } catch (err) {
         toast.error(err?.response?.data?.error || "Could not update permission.");
@@ -1434,7 +1671,10 @@ const Dashboard = () => {
       return;
     }
     if (action === "remove") {
-      if (!isShareOwner) return;
+      if (!canManageSharePeople) {
+        toast.error("Only the owner can remove access.");
+        return;
+      }
       const who = share.name || share.email || "this person";
       if (!window.confirm(`Remove access for ${who}?`)) return;
       setShareSubmitting(true);
@@ -1479,16 +1719,86 @@ const Dashboard = () => {
     }
   };
 
+  const applyGeneralAccessLocally = (fileId, payload) => {
+    const visibility = payload?.visibility;
+    const linkPermission = payload?.link_permission;
+    const token = payload?.link_token;
+    if (visibility) setGeneralAccess(visibility);
+    if (linkPermission) setShareLinkPermission(linkPermission);
+    if (token) setShareLinkToken(token);
+    const patch = (file) => {
+      if (!file || file.id !== fileId) return file;
+      return {
+        ...file,
+        visibility: visibility || file.visibility,
+        link_permission: linkPermission || file.link_permission,
+        link_token: token || file.link_token,
+        can_change_general_access:
+          payload?.can_change_general_access ?? file.can_change_general_access,
+      };
+    };
+    setThetaLibraryFiles((prev) => (prev || []).map(patch));
+    setThetaBrowserOpenedFile((prev) => patch(prev));
+  };
+
+  const persistGeneralAccess = async (visibility, linkPermission) => {
+    const fileId = thetaBrowserFileId;
+    if (!fileId || !canChangeGeneralAccess) return;
+    const prevVisibility = generalAccess;
+    const prevPermission = shareLinkPermission;
+    setGeneralAccess(visibility);
+    setShareLinkPermission(linkPermission);
+    setShareSubmitting(true);
+    try {
+      const result = await thetaFileService.updateAccess(fileId, {
+        visibility,
+        linkPermission,
+      });
+      applyGeneralAccessLocally(fileId, result);
+      toast.success("General access updated.");
+    } catch (err) {
+      setGeneralAccess(prevVisibility);
+      setShareLinkPermission(prevPermission);
+      toast.error(
+        err?.response?.data?.error || "Could not update general access.",
+      );
+    } finally {
+      setShareSubmitting(false);
+    }
+  };
+
+  const copyThetaShareLink = async (fileEntry) => {
+    const fileId = fileEntry?.id || thetaBrowserFileId;
+    const token =
+      fileEntry?.link_token ||
+      shareLinkToken ||
+      thetaOpenedLibraryFile?.link_token;
+    if (!fileId || !token) {
+      toast.error("Could not copy link.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(thetaFileShareUrl(fileId, token));
+      toast.success("Link copied");
+    } catch {
+      toast.error("Could not copy link.");
+    }
+  };
+
   const toggleThetaFileMenu = (menuId, e) => {
     e?.stopPropagation?.();
     if (thetaSourcePicking || thetaLibraryDeletingId) return;
     setThetaFileMenuId((prev) => (prev === menuId ? null : menuId));
   };
 
-  const handleThetaBrowserPickFile = async (fileEntry) => {
+  const handleThetaBrowserPickFile = async (fileEntry, linkToken) => {
     setThetaSourcePicking(true);
     try {
-      const blob = await thetaFileService.downloadBlob(fileEntry.id);
+      const token = linkToken || thetaShareLinkToken || undefined;
+      if (linkToken) setThetaShareLinkToken(linkToken);
+      const blob = await thetaFileService.downloadBlob(fileEntry.id, {
+        linkToken: token,
+      });
       const buf = await blob.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
       const sheets = wb.SheetNames.map((name) =>
@@ -1518,6 +1828,31 @@ const Dashboard = () => {
       setThetaSourcePicking(false);
     }
   };
+
+  useEffect(() => {
+    const token = (shareToken || "").trim();
+    if (!token) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const fileEntry = await thetaFileService.getByLink(token);
+        if (cancelled) return;
+        setShowThetaBrowser(true);
+        await handleThetaBrowserPickFile(fileEntry, token);
+      } catch (err) {
+        if (!cancelled) {
+          toast.error(
+            err?.response?.data?.error || "You need access to open this file.",
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Open once per token; pick-file handler is recreated each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareToken]);
 
   const toggleThetaBrowserSheet = (name) => {
     setThetaBrowserSelected((prev) =>
@@ -1682,12 +2017,44 @@ const Dashboard = () => {
   const persistLibraryWorkbook = async (sheets) => {
     if (!thetaBrowserFileId || !Array.isArray(sheets) || sheets.length === 0)
       return false;
+    if (!canEditOpenedFile) {
+      const err = new Error("Viewer access cannot save this file.");
+      err.response = { status: 403, data: { error: err.message } };
+      throw err;
+    }
     const file = gridToXlsxFile(
       { name: thetaBrowserFileName || "Theta Sheets", sheets },
       thetaBrowserFileName || "Theta Sheets.xlsx",
     );
-    await thetaFileService.replace(thetaBrowserFileId, file);
+    await thetaFileService.replace(thetaBrowserFileId, file, {
+      linkToken: thetaShareLinkToken || undefined,
+    });
     return true;
+  };
+
+  const downloadOpenedThetaFile = async () => {
+    const fileId = thetaBrowserFileId || thetaOpenedLibraryFile?.id;
+    if (!fileId) return;
+    try {
+      const blob = await thetaFileService.downloadBlob(fileId, {
+        linkToken: thetaShareLinkToken || undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download =
+        thetaOpenedLibraryFile?.filename ||
+        thetaBrowserFileName ||
+        "Theta Sheets.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.error || "Could not download this file.",
+      );
+    }
   };
 
   const handleThetaSheetDeleted = async (deletedName, remainingSheets) => {
@@ -1713,6 +2080,10 @@ const Dashboard = () => {
 
     // Excel Online style: write workbook back to Theta cloud library immediately
     // so reopening the file no longer shows the deleted subsheet.
+    if (!canEditOpenedFile) {
+      toast.error("Viewer access cannot change this file.");
+      return;
+    }
     if (nextSheets.length === 0) {
       setThetaJustSaved(false);
       return;
@@ -1726,7 +2097,11 @@ const Dashboard = () => {
       const hasScheduleSheet = nextSheets.some(
         (s) => selectedNames.includes(s.name) && hasScheduleHeaders(s.headers),
       );
-      if (hasScheduleSheet && selectedNames.length > 0) {
+      if (
+        !skipLiveSheetMerge &&
+        hasScheduleSheet &&
+        selectedNames.length > 0
+      ) {
         await persistSelectedThetaSheets(nextSheets, selectedNames, {
           showValidationErrors: false,
         });
@@ -1752,6 +2127,7 @@ const Dashboard = () => {
     setThetaJustSaved(false);
     setThetaFileMenuId(null);
     setShowShareModal(false);
+    setThetaShareLinkToken("");
   };
 
   // Merge the selected (possibly edited) sheets into one grid, aligning
@@ -1781,8 +2157,17 @@ const Dashboard = () => {
       // deletes/renames/edits (not only the merged active Theta Sheet).
       let librarySaved = false;
       if (thetaBrowserFileId) {
+        if (!canEditOpenedFile) {
+          toast.error("Viewer access cannot save this file.");
+          return;
+        }
         await persistLibraryWorkbook(liveSheets);
         librarySaved = true;
+      }
+      if (skipLiveSheetMerge) {
+        setThetaJustSaved(false);
+        toast.success("File saved.");
+        return;
       }
       // Schedule-column modal is for active-sheet sync only. Never block the
       // library Save UX with it when the workbook was already written.
@@ -5166,119 +5551,6 @@ const Dashboard = () => {
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 10 }}
                   >
-                    {isSheetsStep &&
-                      (() => {
-                        const openedFile =
-                          thetaLibraryFiles.find(
-                            (f) => f.id === thetaBrowserFileId,
-                          ) || thetaBrowserOpenedFile;
-                        const canDelete = Boolean(openedFile?.can_delete);
-                        const canShare = Boolean(
-                          openedFile?.can_share ||
-                            openedFile?.is_owner ||
-                            openedFile?.can_transfer_ownership,
-                        );
-                        const menuOpen = thetaFileMenuId === "header";
-                        return (
-                          <div
-                            ref={menuOpen ? thetaFileMenuRef : null}
-                            style={{ position: "relative" }}
-                          >
-                            <button
-                              type="button"
-                              onClick={(ev) =>
-                                toggleThetaFileMenu("header", ev)
-                              }
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 6,
-                                padding: "7px 12px",
-                                border: "1px solid #d1d5db",
-                                borderRadius: 7,
-                                background: "#fff",
-                                color: "#334155",
-                                fontSize: 13,
-                                fontWeight: 600,
-                                cursor: "pointer",
-                              }}
-                            >
-                              File
-                              <ChevronDown size={14} />
-                            </button>
-                            {menuOpen && (
-                              <div
-                                style={{
-                                  position: "absolute",
-                                  top: "calc(100% + 6px)",
-                                  left: 0,
-                                  minWidth: 168,
-                                  background: "#fff",
-                                  border: "1px solid #e2e8f0",
-                                  borderRadius: 8,
-                                  boxShadow: "0 10px 28px rgba(15,23,42,0.12)",
-                                  padding: 4,
-                                  zIndex: 20,
-                                }}
-                              >
-                                {canShare && (
-                                <button
-                                  type="button"
-                                  onClick={(ev) =>
-                                    openThetaShareModal(openedFile, ev)
-                                  }
-                                  style={{
-                                    width: "100%",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                    padding: "8px 10px",
-                                    border: "none",
-                                    borderRadius: 6,
-                                    background: "transparent",
-                                    color: "#334155",
-                                    fontSize: 13,
-                                    fontWeight: 500,
-                                    cursor: "pointer",
-                                    textAlign: "left",
-                                  }}
-                                >
-                                  <Link2 size={14} />
-                                  Share
-                                </button>
-                                )}
-                                {canDelete && (
-                                  <button
-                                    type="button"
-                                    onClick={(ev) => {
-                                      setThetaFileMenuId(null);
-                                      handleThetaLibraryDelete(openedFile, ev);
-                                    }}
-                                    style={{
-                                      width: "100%",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: 8,
-                                      padding: "8px 10px",
-                                      border: "none",
-                                      borderRadius: 6,
-                                      background: "transparent",
-                                      color: "#dc2626",
-                                      fontSize: 13,
-                                      fontWeight: 500,
-                                      cursor: "pointer",
-                                      textAlign: "left",
-                                    }}
-                                  >
-                                    <Trash2 size={14} />
-                                    Delete
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
                     <img
                       src={
                         isSheetsStep
@@ -5299,6 +5571,37 @@ const Dashboard = () => {
                         ? thetaBrowserFileName || "Choose data"
                         : "Browse theta cloud"}
                     </span>
+                    {isSheetsStep && openedAccessRoleLabel && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color:
+                            openedAccessRoleLabel === "View only"
+                              ? "#64748b"
+                              : openedAccessRoleLabel === "Owner"
+                                ? "#b45309"
+                                : "#1d4ed8",
+                          background:
+                            openedAccessRoleLabel === "View only"
+                              ? "#f8fafc"
+                              : openedAccessRoleLabel === "Owner"
+                                ? "#fffbeb"
+                                : "#eff6ff",
+                          border:
+                            openedAccessRoleLabel === "View only"
+                              ? "1px solid #e2e8f0"
+                              : openedAccessRoleLabel === "Owner"
+                                ? "1px solid #fde68a"
+                                : "1px solid #bfdbfe",
+                          borderRadius: 999,
+                          padding: "2px 8px",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {openedAccessRoleLabel}
+                      </span>
+                    )}
                   </div>
 
                   <div
@@ -5335,41 +5638,34 @@ const Dashboard = () => {
                     <div
                       onClick={(e) => e.stopPropagation()}
                       style={{
-                        width: 460,
+                        width: 540,
                         background: "#fff",
-                        borderRadius: 12,
+                        borderRadius: 16,
                         padding: 24,
                         boxShadow: "0 20px 50px rgba(0,0,0,0.2)",
                       }}
                     >
-                      {/* Header */}
                       <div
                         style={{
                           display: "flex",
                           justifyContent: "space-between",
-                          alignItems: "center",
-                          marginBottom: 20,
+                          alignItems: "flex-start",
+                          gap: 16,
+                          marginBottom: 16,
                         }}
                       >
-                        <div>
+                        <div style={{ minWidth: 0 }}>
                           <div
                             style={{
-                              fontSize: 18,
+                              fontSize: 20,
                               fontWeight: 700,
                               color: "#0f172a",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
                             }}
                           >
-                            Share
-                          </div>
-
-                          <div
-                            style={{
-                              fontSize: 13,
-                              color: "#64748b",
-                              marginTop: 4,
-                            }}
-                          >
-                            {thetaBrowserFileName || "This file"}
+                            Share "{thetaBrowserFileName || "This file"}"
                           </div>
                         </div>
 
@@ -5389,43 +5685,64 @@ const Dashboard = () => {
                       </div>
 
                       {/* People */}
-                      {isShareOwner && (
-                      <div style={{ marginBottom: 20 }}>
+                      {canAddSharePeople && (
+                      <div style={{ marginBottom: 18 }}>
                         <div
                           style={{
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: "#334155",
-                            marginBottom: 8,
+                            position: "relative",
                           }}
                         >
-                          Add people
-                        </div>
-
-                        <div style={{ position: "relative" }}>
-                          <input
-                            type="text"
-                            value={
-                              selectedShareUser
-                                ? selectedShareUser.name ||
-                                  selectedShareUser.email
-                                : shareEmail
-                            }
-                            onChange={(e) =>
-                              handleShareEmailChange(e.target.value)
-                            }
-                            placeholder="Search a person or type an email"
+                          <div
                             style={{
-                              width: "100%",
-                              boxSizing: "border-box",
-                              padding: "10px 12px",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: 7,
-                              fontSize: 13,
+                              display: "flex",
+                              gap: 8,
+                              alignItems: "center",
                             }}
-                          />
+                          >
+                            <input
+                              type="text"
+                              value={
+                                selectedShareUser
+                                  ? selectedShareUser.name ||
+                                    selectedShareUser.email
+                                  : shareEmail
+                              }
+                              onChange={(e) =>
+                                handleShareEmailChange(e.target.value)
+                              }
+                              placeholder="Add people, groups, spaces, and calendar events"
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                boxSizing: "border-box",
+                                padding: "10px 12px",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: 7,
+                                fontSize: 13,
+                              }}
+                            />
+                            <select
+                              value={sharePermission}
+                              onChange={(e) =>
+                                setSharePermission(e.target.value)
+                              }
+                              title="Permission for this person"
+                              style={{
+                                flexShrink: 0,
+                                width: 110,
+                                padding: "10px 8px",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: 7,
+                                fontSize: 13,
+                                background: "#fff",
+                              }}
+                            >
+                              <option value="viewer">Viewer</option>
+                              <option value="editor">Editor</option>
+                            </select>
+                          </div>
                           {(shareUsersLoading ||
-                            shareUserResults.length > 0) &&
+                            visibleShareUserResults.length > 0) &&
                             !selectedShareUser && (
                               <div
                                 style={{
@@ -5453,13 +5770,24 @@ const Dashboard = () => {
                                     Searching…
                                   </div>
                                 ) : (
-                                  shareUserResults.map((u) => (
+                                  visibleShareUserResults.map((u) => {
+                                    const existing = (fileShares || []).find(
+                                      (s) =>
+                                        !s?.pending &&
+                                        String(s.user_id || "") ===
+                                          String(u.id || ""),
+                                    );
+                                    return (
                                     <button
                                       key={u.id}
                                       type="button"
                                       onClick={() => {
                                         setSelectedShareUser(u);
                                         setShareEmail(u.email || "");
+                                        // Keep current role if already shared so user can change Viewer ↔ Editor then Update.
+                                        setSharePermission(
+                                          existing?.permission || "viewer",
+                                        );
                                         setShareUserResults([]);
                                       }}
                                       style={{
@@ -5488,9 +5816,13 @@ const Dashboard = () => {
                                         }}
                                       >
                                         {u.email}
+                                        {existing?.permission
+                                          ? ` · already ${existing.permission}`
+                                          : ""}
                                       </div>
                                     </button>
-                                  ))
+                                    );
+                                  })
                                 )}
                               </div>
                             )}
@@ -5511,7 +5843,7 @@ const Dashboard = () => {
                           People with access
                         </div>
 
-                        {isShareOwner && (
+                        {(fileShareOwner || isShareOwner) && (
                         <div
                           style={{
                             display: "flex",
@@ -5520,25 +5852,65 @@ const Dashboard = () => {
                             padding: "10px 0",
                           }}
                         >
-                          <div>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 12,
+                            }}
+                          >
                             <div
                               style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: "#0f172a",
+                                width: 28,
+                                height: 28,
+                                borderRadius: 999,
+                                background: "#e0f2fe",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontWeight: 700,
+                                color: "#0369a1",
+                                fontSize: 12,
+                                flexShrink: 0,
                               }}
                             >
-                              You
+                              {getInitials(
+                                fileShareOwner?.name ||
+                                  fileShareOwner?.email ||
+                                  user?.name ||
+                                  "Owner",
+                              )}
                             </div>
 
-                            <div
-                              style={{
-                                fontSize: 12,
-                                color: "#64748b",
-                                marginTop: 3,
-                              }}
-                            >
-                              {user?.name || user?.email || "Owner"}
+                            <div>
+                              <div
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: "#0f172a",
+                                }}
+                              >
+                                {fileShareOwner &&
+                                String(fileShareOwner.id) ===
+                                  String(user?.id || "")
+                                  ? "You"
+                                  : fileShareOwner?.name ||
+                                    fileShareOwner?.email ||
+                                    user?.name ||
+                                    "Owner"}
+                              </div>
+
+                              <div
+                                style={{
+                                  fontSize: 12,
+                                  color: "#64748b",
+                                  marginTop: 3,
+                                }}
+                              >
+                                {fileShareOwner?.email ||
+                                  user?.email ||
+                                  "Owner"}
+                              </div>
                             </div>
                           </div>
 
@@ -5553,7 +5925,15 @@ const Dashboard = () => {
                           </div>
                         </div>
                         )}
-                        {fileShares.map((share) => {
+                        {fileShares
+                          .filter((share) => {
+                            if (share.pending) return true;
+                            const sid = String(share.user_id || "");
+                            const oid = String(fileShareOwner?.id || "");
+                            if (!sid) return false;
+                            return !oid || sid !== oid;
+                          })
+                          .map((share) => {
                           const currentPerm = share.permission || "viewer";
                           return (
                           <div
@@ -5566,24 +5946,50 @@ const Dashboard = () => {
                               borderTop: "1px solid #f1f5f9",
                             }}
                           >
-                            <div>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 12,
+                              }}
+                            >
                               <div
                                 style={{
-                                  fontSize: 13,
-                                  fontWeight: 600,
+                                  width: 28,
+                                  height: 28,
+                                  borderRadius: 999,
+                                  background: "#f1f5f9",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontWeight: 700,
                                   color: "#0f172a",
-                                }}
-                              >
-                                {share.name || share.email}
-                              </div>
-                              <div
-                                style={{
                                   fontSize: 12,
-                                  color: "#64748b",
-                                  marginTop: 3,
+                                  flexShrink: 0,
                                 }}
                               >
-                                {share.email}
+                                {getInitials(share.name || share.email)}
+                              </div>
+
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    color: "#0f172a",
+                                  }}
+                                >
+                                  {share.name || share.email}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: 12,
+                                    color: "#64748b",
+                                    marginTop: 3,
+                                  }}
+                                >
+                                  {share.email}
+                                </div>
                               </div>
                             </div>
                             {share.pending ? (
@@ -5597,13 +6003,12 @@ const Dashboard = () => {
                             >
                               {`Invited · ${currentPerm}`}
                             </div>
-                            ) : isShareOwner ? (
+                            ) : isShareOwner || isFileRecordOwner ? (
                               <select
                                 value={currentPerm}
                                 disabled={shareSubmitting}
                                 onChange={(e) => {
                                   const next = e.target.value;
-                                  e.target.value = currentPerm;
                                   handleShareRoleAction(share, next);
                                 }}
                                 style={{
@@ -5666,38 +6071,6 @@ const Dashboard = () => {
                         })}
                       </div>
 
-                      {/* Permission */}
-                      {isShareOwner && (
-                      <div style={{ marginBottom: 20 }}>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: "#334155",
-                            marginBottom: 8,
-                          }}
-                        >
-                          Permission
-                        </div>
-
-                        <select
-                          value={sharePermission}
-                          onChange={(e) => setSharePermission(e.target.value)}
-                          style={{
-                            width: "100%",
-                            padding: "10px 12px",
-                            border: "1px solid #cbd5e1",
-                            borderRadius: 7,
-                            fontSize: 13,
-                            background: "#fff",
-                          }}
-                        >
-                          <option value="viewer">Viewer</option>
-                          <option value="editor">Editor</option>
-                        </select>
-                      </div>
-                      )}
-
                       {/* General access */}
                       <div style={{ marginBottom: 24 }}>
                         <div
@@ -5711,66 +6084,141 @@ const Dashboard = () => {
                           General access
                         </div>
 
-                        <select
-                          value={generalAccess}
-                          onChange={(e) => setGeneralAccess(e.target.value)}
+                        <div
                           style={{
-                            width: "100%",
-                            padding: "10px 12px",
-                            border: "1px solid #cbd5e1",
-                            borderRadius: 7,
-                            fontSize: 13,
-                            background: "#fff",
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "center",
                           }}
                         >
-                          <option value="restricted">Restricted</option>
-                          <option value="company">
-                            Anyone in the company with the link
-                          </option>
-                          <option value="anyone">Anyone with the link</option>
-                        </select>
+                          <div
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 999,
+                              background: "#f1f5f9",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <KeyRound size={16} style={{ color: "#64748b" }} />
+                          </div>
+                          <select
+                            value={generalAccess}
+                            disabled={!canChangeGeneralAccess || shareSubmitting}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              persistGeneralAccess(
+                                next,
+                                next === "restricted"
+                                  ? shareLinkPermission
+                                  : shareLinkPermission || "viewer",
+                              );
+                            }}
+                            style={{
+                              width: 210,
+                              padding: "10px 12px",
+                              border: "1px solid #cbd5e1",
+                              borderRadius: 7,
+                              fontSize: 13,
+                              background: canChangeGeneralAccess
+                                ? "#fff"
+                                : "#f8fafc",
+                              color: "#0f172a",
+                            }}
+                          >
+                            {GENERAL_ACCESS_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                          {generalAccess !== "restricted" && (
+                            <select
+                              value={shareLinkPermission}
+                              disabled={
+                                !canChangeGeneralAccess || shareSubmitting
+                              }
+                              onChange={(e) =>
+                                persistGeneralAccess(
+                                  generalAccess,
+                                  e.target.value,
+                                )
+                              }
+                              title="Role for people who open this link"
+                              style={{
+                                flexShrink: 0,
+                                width: 110,
+                                padding: "10px 8px",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: 7,
+                                fontSize: 13,
+                                background: canChangeGeneralAccess
+                                  ? "#fff"
+                                  : "#f8fafc",
+                              }}
+                            >
+                              <option value="viewer">Viewer</option>
+                              <option value="editor">Editor</option>
+                            </select>
+                          )}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "#64748b",
+                            marginTop: 8,
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {generalAccess === "restricted"
+                            ? (
+                                GENERAL_ACCESS_OPTIONS.find(
+                                  (opt) => opt.value === generalAccess,
+                                ) || GENERAL_ACCESS_OPTIONS[0]
+                              ).help
+                            : `${(
+                                GENERAL_ACCESS_OPTIONS.find(
+                                  (opt) => opt.value === generalAccess,
+                                ) || GENERAL_ACCESS_OPTIONS[0]
+                              ).help} They can ${
+                                shareLinkPermission === "editor"
+                                  ? "edit"
+                                  : "view"
+                              }.`}
+                        </div>
                       </div>
 
                       {/* Buttons */}
                       <div
                         style={{
                           display: "flex",
-                          justifyContent: "flex-end",
+                          justifyContent: "space-between",
+                          alignItems: "center",
                           gap: 10,
+                          marginTop: 8,
                         }}
                       >
                         <button
                           type="button"
-                          onClick={() => {
-                            const shareUrl = window.location.href;
-                            navigator.clipboard.writeText(shareUrl);
-                            toast.success("Link copied");
-                          }}
+                          onClick={() => copyThetaShareLink()}
                           style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 8,
                             padding: "9px 14px",
                             border: "1px solid #cbd5e1",
-                            borderRadius: 7,
+                            borderRadius: 999,
                             background: "#fff",
                             color: "#334155",
                             cursor: "pointer",
                             fontWeight: 600,
                           }}
                         >
-                          🔗 Copy link
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowShareModal(false)}
-                          style={{
-                            padding: "9px 16px",
-                            border: "1px solid #cbd5e1",
-                            borderRadius: 7,
-                            background: "#fff",
-                            cursor: "pointer",
-                            fontWeight: 600,
-                          }}
-                        >
-                          Cancel
+                          <Link2 size={14} />
+                          Copy link
                         </button>
 
                         <button
@@ -5789,21 +6237,25 @@ const Dashboard = () => {
                           style={{
                             padding: "9px 16px",
                             border: "none",
-                            borderRadius: 7,
-                            background: "#16a34a",
+                            borderRadius: 10,
+                            background: "#1a73e8",
                             color: "#fff",
                             cursor: shareSubmitting ? "default" : "pointer",
-                            fontWeight: 600,
-                            opacity: shareSubmitting ? 0.7 : 1,
+                            fontWeight: 700,
+                            opacity: shareSubmitting ? 0.75 : 1,
                           }}
                         >
                           {shareSubmitting
-                            ? "Sharing…"
+                            ? existingShareToUpdate
+                              ? "Updating…"
+                              : "Sharing…"
                             : selectedShareUser ||
                                 /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
                                   (shareEmail || "").trim(),
                                 )
-                              ? "Add"
+                              ? existingShareToUpdate
+                                ? "Update"
+                                : "Add"
                               : "Done"}
                         </button>
                       </div>
@@ -5895,18 +6347,26 @@ const Dashboard = () => {
                               fileEntry.is_owner ||
                               fileEntry.can_transfer_ownership,
                           );
-                          const accessRole = fileAccessRole(fileEntry);
+                          const canCopyLink = Boolean(
+                            fileEntry.id && fileEntry.link_token,
+                          );
+                          const accessRole = fileAccessRole(fileEntry, user?.id);
                           const roleStyle = accessRole
                             ? ACCESS_ROLE_STYLES[accessRole]
                             : null;
                           return (
                             <div
                               key={fileEntry.id}
-                              onClick={() =>
-                                !thetaSourcePicking &&
-                                !isDeleting &&
-                                handleThetaBrowserPickFile(fileEntry)
-                              }
+                              onClick={(ev) => {
+                                ev.preventDefault();
+                                ev.stopPropagation();
+                                if (
+                                  !thetaSourcePicking &&
+                                  !isDeleting
+                                ) {
+                                  handleThetaBrowserPickFile(fileEntry);
+                                }
+                              }}
                               style={{
                                 display: "flex",
                                 alignItems: "center",
@@ -5977,16 +6437,24 @@ const Dashboard = () => {
                                   {roleStyle.label}
                                 </span>
                               )}
-                              {(canShare || canDelete) && (
+                              {(canShare || canDelete || canCopyLink) && (
                                 <div
                                   ref={
                                     thetaFileMenuId === fileEntry.id
                                       ? thetaFileMenuRef
                                       : null
                                   }
+                                  onClick={(ev) => {
+                                    ev.preventDefault();
+                                    ev.stopPropagation();
+                                  }}
+                                  onMouseDown={(ev) => ev.stopPropagation()}
                                   style={{
                                     position: "relative",
                                     flexShrink: 0,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 6,
                                   }}
                                 >
                                   <button
@@ -5994,9 +6462,12 @@ const Dashboard = () => {
                                     title="File menu"
                                     aria-label={`File menu for ${fileEntry.filename || "file"}`}
                                     disabled={isDeleting || thetaSourcePicking}
-                                    onClick={(ev) =>
-                                      toggleThetaFileMenu(fileEntry.id, ev)
-                                    }
+                                    onClick={(ev) => {
+                                      ev.preventDefault();
+                                      ev.stopPropagation();
+                                      toggleThetaFileMenu(fileEntry.id, ev);
+                                    }}
+                                    onMouseDown={(ev) => ev.stopPropagation()}
                                     style={{
                                       display: "inline-flex",
                                       alignItems: "center",
@@ -6036,11 +6507,44 @@ const Dashboard = () => {
                                         zIndex: 20,
                                       }}
                                     >
+                                      {canCopyLink && (
+                                      <button
+                                        type="button"
+                                        onClick={(ev) => {
+                                          ev.stopPropagation();
+                                          setThetaFileMenuId(null);
+                                          copyThetaShareLink(fileEntry);
+                                        }}
+                                        style={{
+                                          width: "100%",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: 8,
+                                          padding: "8px 10px",
+                                          border: "none",
+                                          borderRadius: 6,
+                                          background: "transparent",
+                                          color: "#334155",
+                                          fontSize: 13,
+                                          fontWeight: 500,
+                                          cursor: "pointer",
+                                          textAlign: "left",
+                                        }}
+                                      >
+                                        <Link2 size={14} />
+                                        Copy link
+                                      </button>
+                                      )}
                                       {canShare && (
                                       <button
                                         type="button"
-                                        onClick={(ev) =>
-                                          openThetaShareModal(fileEntry, ev)
+                                        onClick={(ev) => {
+                                          ev.preventDefault();
+                                          ev.stopPropagation();
+                                          openThetaShareModal(fileEntry, ev);
+                                        }}
+                                        onMouseDown={(ev) =>
+                                          ev.stopPropagation()
                                         }
                                         style={{
                                           width: "100%",
@@ -6066,12 +6570,17 @@ const Dashboard = () => {
                                         <button
                                           type="button"
                                           onClick={(ev) => {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
                                             setThetaFileMenuId(null);
                                             handleThetaLibraryDelete(
                                               fileEntry,
                                               ev,
                                             );
                                           }}
+                                          onMouseDown={(ev) =>
+                                            ev.stopPropagation()
+                                          }
                                           style={{
                                             width: "100%",
                                             display: "flex",
@@ -6268,6 +6777,14 @@ const Dashboard = () => {
                               sheets: thetaBrowserSheets,
                             }}
                             hideToolbar
+                            readOnly={!canEditOpenedFile}
+                            onCopyLink={
+                              thetaOpenedLibraryFile?.id &&
+                              thetaOpenedLibraryFile?.link_token
+                                ? () =>
+                                    copyThetaShareLink(thetaOpenedLibraryFile)
+                                : undefined
+                            }
                             onShare={
                               thetaOpenedLibraryFile?.can_share ||
                               thetaOpenedLibraryFile?.is_owner ||
@@ -6288,7 +6805,11 @@ const Dashboard = () => {
                             onDirty={() => setThetaJustSaved(false)}
                             onSheetRenamed={handleThetaSheetRenamed}
                             onSheetsChange={handleThetaSheetsChange}
-                            onSheetDeleted={handleThetaSheetDeleted}
+                            onSheetDeleted={
+                              canEditOpenedFile
+                                ? handleThetaSheetDeleted
+                                : undefined
+                            }
                             height="100%"
                           />
                         </div>
@@ -6328,8 +6849,34 @@ const Dashboard = () => {
                   >
                     {thetaBrowserStep === "pickSheets" ? "Back" : "Cancel"}
                   </button>
-                  {thetaBrowserStep === "pickSheets" &&
-                    (thetaJustSaved ? (
+                  {thetaBrowserStep === "pickSheets" && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={downloadOpenedThetaFile}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "7px 14px",
+                          background: "#fff",
+                          border: "1px solid #e2e8f0",
+                          borderRadius: 8,
+                          fontSize: 12.5,
+                          fontWeight: 600,
+                          color: "#334155",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Download size={13} /> Download
+                      </button>
+                    {thetaJustSaved ? (
                       <button
                         onClick={handleViewThetaReports}
                         style={{
@@ -6349,6 +6896,16 @@ const Dashboard = () => {
                       >
                         <BarChart2 size={13} /> View Reports
                       </button>
+                    ) : !canEditOpenedFile ? (
+                      <span
+                        style={{
+                          fontSize: 12.5,
+                          fontWeight: 600,
+                          color: "#64748b",
+                        }}
+                      >
+                        View only
+                      </span>
                     ) : (
                       <button
                         disabled={
@@ -6393,7 +6950,9 @@ const Dashboard = () => {
                           </>
                         )}
                       </button>
-                    ))}
+                    )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

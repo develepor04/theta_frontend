@@ -23,14 +23,27 @@ import CompanyAdminPage from './pages/CompanyAdminPage';
 import SuperAdminPage from './pages/SuperAdminPage';
 import AuthTransfer from './pages/AuthTransfer';
 import ProjectIntelligenceDashboard from './pages/ProjectIntelligenceDashboard';
+import ThetaSharePage from './pages/ThetaSharePage';
 
 function App() {
   const { isAuthenticated, user, mustChangePassword, authReady, setAuthReady, setUser, logout } = useStore();
 
+  const loginRedirect = () => {
+    const next = `${window.location.pathname}${window.location.search}`;
+    const safe = next.startsWith('/') && !next.startsWith('//') && next !== '/login';
+    return safe ? `/login?next=${encodeURIComponent(next)}` : '/login';
+  };
+
   const renderProtected = (element) => {
-    if (!isAuthenticated) return <Navigate to="/login" />;
+    if (!isAuthenticated) return <Navigate to={loginRedirect()} />;
     if (mustChangePassword || user?.must_change_password) return <Navigate to="/first-login-password" />;
-    if (user?.role === 'super_admin') return <Navigate to="/super-admin" />;
+    if (
+      user?.role === 'super_admin' &&
+      !window.location.pathname.startsWith('/theta-share/') &&
+      !window.location.pathname.startsWith('/s/')
+    ) {
+      return <Navigate to="/super-admin" />;
+    }
     return element;
   };
 
@@ -161,6 +174,14 @@ function App() {
         <Route
           path="/dashboard"
           element={renderProtected(<Dashboard />)}
+        />
+        <Route
+          path="/s/:fileId/:linkToken"
+          element={<ThetaSharePage />}
+        />
+        <Route
+          path="/theta-share/:shareToken"
+          element={<ThetaSharePage />}
         />
         <Route
           path="/reports"

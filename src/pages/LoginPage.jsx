@@ -31,6 +31,16 @@ const LoginPage = () => {
   const isAccountDomain = window.location.hostname === 'account.thetapulse.ai';
 
   const redirectAfterLogin = (token, mustChangePassword, role, companyName) => {
+    const next = new URLSearchParams(window.location.search).get('next');
+    const isSafeNext =
+      next &&
+      next.startsWith('/') &&
+      !next.startsWith('//') &&
+      !next.startsWith('/login');
+    if (isSafeNext && !mustChangePassword) {
+      navigate(next);
+      return;
+    }
     const isDescon = companyName?.toLowerCase() === 'descon';
     if (isAccountDomain && !mustChangePassword) {
       window.location.href = `https://pulse.thetadynamics.io/auth-transfer?token=${encodeURIComponent(token)}`;

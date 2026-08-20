@@ -1,4 +1,4 @@
-import React, { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
@@ -141,9 +141,11 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   onSheetRenamed,
   onSheetsChange,
   onShare,
+  onCopyLink,
   onFileDelete,
   onSheetDeleted,
   hideToolbar = false,
+  readOnly = false,
   height = '600px',
 }, ref) {
   const containerRef = useRef(null);
@@ -177,6 +179,24 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   editingRowRef.current = editingRow;
   const addRecordOpenRef = useRef(false);
   addRecordOpenRef.current = addRecordOpen;
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+
+  const applyWorkbookEditMode = useCallback(async (api, isReadOnly) => {
+    try {
+      const workbook = api?.getActiveWorkbook?.();
+      const permission = workbook?.getWorkbookPermission?.();
+      if (!permission) return;
+      if (isReadOnly) {
+        await permission.setReadOnly?.();
+        permission.setPermissionDialogVisible?.(false);
+      } else {
+        await permission.setEditable?.();
+      }
+    } catch {
+      // Older facade builds may not expose permission helpers.
+    }
+  }, []);
 
   const syncSheetsToParent = () => {
     const workbook = univerAPIRef.current?.getActiveWorkbook();
@@ -289,7 +309,11 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     applyColumnFormatsFromGrid(liveWorkbook, localData);
     setActiveSheetName(liveWorkbook?.getActiveSheet?.()?.getSheetName?.() || '');
     // Allow a tick for Univer to finish applying restored formats.
-    setTimeout(() => { suppressDirty = false; }, 0);
+    setTimeout(() => {
+      suppressDirty = false;
+      // Viewer = Univer read-only; Owner/Editor = editable.
+      applyWorkbookEditMode(api, readOnlyRef.current);
+    }, 0);
 
     const syncActiveSheetName = () => {
       const name = api.getActiveWorkbook()?.getActiveSheet?.()?.getSheetName?.() || '';
@@ -297,7 +321,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     };
 
     const markDirtyAndSave = () => {
-      if (suppressDirty) return;
+      if (suppressDirty || readOnlyRef.current) return;
       dirtyRef.current = true;
       onDirty?.();
       scheduleDebouncedSave();
@@ -363,7 +387,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
         y: event.clientY,
         sheetId: target.getSheetId?.(),
         sheetName: String(target.getSheetName?.() || ''),
-        canDelete: sheets.length > 1,
+        canDelete: !readOnlyRef.current && sheets.length > 1,
       });
     };
     mountEl.addEventListener('contextmenu', onTabContextMenu, true);
@@ -427,6 +451,19 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetId, remountKey]);
 
+  // Keep Univer edit mode in sync when role/readOnly changes without remount.
+  useEffect(() => {
+    if (!univerAPI) return undefined;
+    let cancelled = false;
+    (async () => {
+      await applyWorkbookEditMode(univerAPI, readOnly);
+      if (cancelled) return;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [univerAPI, readOnly, applyWorkbookEditMode]);
+
   // Open Edit Record panel when a data row is selected in the sheet.
   useEffect(() => {
     if (!univerAPI?.Event?.SelectionMoveEnd || typeof univerAPI.addEvent !== 'function') {
@@ -434,6 +471,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     }
 
     const disposable = univerAPI.addEvent(univerAPI.Event.SelectionMoveEnd, (params) => {
+      if (readOnlyRef.current) return;
       const cfg = formConfigRef.current;
       if (!cfg?.ready || !cfg.fields?.length) return;
 
@@ -649,6 +687,10 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   }
 
   function handleMenuDuplicate() {
+    if (readOnlyRef.current) {
+      closeSheetMenu();
+      return;
+    }
     if (!sheetMenu) return;
     const { sheetName } = sheetMenu;
     closeSheetMenu();
@@ -666,6 +708,10 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   }
 
   function handleMenuDelete() {
+    if (readOnlyRef.current) {
+      closeSheetMenu();
+      return;
+    }
     if (!sheetMenu) return;
     const { sheetName, sheetId: tabSheetId, canDelete } = sheetMenu;
     if (!canDelete) {
@@ -738,7 +784,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     <div style={{ height, width: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '0 8px 8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {(onShare || onFileDelete) && (
+          {(onCopyLink || onShare || onFileDelete) && (
             <div ref={fileMenuRef} style={{ position: 'relative' }}>
               <button
                 type="button"
@@ -775,12 +821,36 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
                     zIndex: 30,
                   }}
                 >
-                  {onShare && (
+                  {onCopyLink && (
                     <button
                       type="button"
                       onClick={() => {
                         setShowFileMenu(false);
-                        onShare();
+                        onCopyLink();
+                      }}
+                      style={{
+                        width: '100%',
+                        display: 'block',
+                        textAlign: 'left',
+                        padding: '8px 10px',
+                        border: 'none',
+                        borderRadius: 6,
+                        background: 'transparent',
+                        color: '#334155',
+                        fontSize: 13,
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Copy link
+                    </button>
+                  )}
+                  {onShare && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        setShowFileMenu(false);
+                        onShare(e);
                       }}
                       style={{
                         width: '100%',
@@ -850,10 +920,12 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
             </>
           )}
         </div>
-        <AddRecordButton
-          disabled={!formConfig.ready}
-          onClick={openAddRecordPanel}
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+          <AddRecordButton
+            disabled={!formConfig.ready || readOnly}
+            onClick={openAddRecordPanel}
+          />
+        </div>
       </div>
 
       <AddRecordPanel

@@ -617,7 +617,12 @@ const UsersSection = ({ users, companies, reload, currentUserId, initialCompanyI
     finally { setAct(`st-${u.id}`, null); }
   };
   const handleDelete = async (u) => {
-    if (!window.confirm(`Permanently delete ${u.name}?`)) return;
+    if (
+      !window.confirm(
+        `Permanently delete ${u.name}? Their file-share access will be removed automatically.`,
+      )
+    )
+      return;
     setAct(`del-${u.id}`, true);
     try { await superAdminService.deleteUser(u.id); toast.success(`${u.name} deleted`); reload(); }
     catch (e) { toast.error(e.response?.data?.error || 'Failed'); }

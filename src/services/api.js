@@ -53,8 +53,10 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    const isLoginEndpoint = error.config?.url?.includes('/auth/login');
-    if (error.response?.status === 401 && !isLoginEndpoint) {
+    const url = error.config?.url || '';
+    const isLoginEndpoint = url.includes('/auth/login');
+    const isShareLink = url.includes('/theta-files/s/') || url.includes('/theta-files/link/');
+    if (error.response?.status === 401 && !isLoginEndpoint && !isShareLink) {
       // Full cleanup — same as useStore logout so no previous-user data leaks
       localStorage.removeItem('token');
       Object.keys(localStorage)
@@ -341,10 +343,11 @@ export const thetaFileService = {
     return response.data;
   },
 
-  downloadBlob: async (fileId) => {
+  downloadBlob: async (fileId, { linkToken } = {}) => {
     try {
       const response = await api.get(`/theta-files/${fileId}/download`, {
         responseType: 'blob',
+        params: linkToken ? { link_token: linkToken } : undefined,
       });
       return response.data;
     } catch (err) {
@@ -361,11 +364,12 @@ export const thetaFileService = {
   },
 
   /** Overwrite an existing library workbook in place (same file id). */
-  replace: async (fileId, file) => {
+  replace: async (fileId, file, { linkToken } = {}) => {
     const formData = new FormData();
     formData.append('file', file);
     const response = await api.put(`/theta-files/${fileId}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      params: linkToken ? { link_token: linkToken } : undefined,
     });
     return response.data;
   },
@@ -414,7 +418,66 @@ export const thetaFileService = {
     });
     return response.data;
   },
+
+  updateAccess: async (fileId, { visibility, linkPermission }) => {
+    const response = await api.patch(`/theta-files/${fileId}/access`, {
+      visibility,
+      link_permission: linkPermission,
+    });
+    return response.data;
+  },
+
+  getByLink: async (token) => {
+    const response = await api.get(
+      `/theta-files/link/${encodeURIComponent(token)}`,
+    );
+    return response.data;
+  },
+
+  resolveShare: async (fileId, linkToken) => {
+    const response = await api.get(
+      `/theta-files/s/${encodeURIComponent(fileId)}/${encodeURIComponent(linkToken)}`,
+    );
+    return response.data;
+  },
+
+  downloadShareBlob: async (fileId, linkToken) => {
+    try {
+      const response = await api.get(
+        `/theta-files/s/${encodeURIComponent(fileId)}/${encodeURIComponent(linkToken)}/download`,
+        { responseType: 'blob' },
+      );
+      return response.data;
+    } catch (err) {
+      const data = err?.response?.data;
+      if (data instanceof Blob) {
+        try {
+          err.response.data = JSON.parse(await data.text());
+        } catch {
+          // keep original blob body
+        }
+      }
+      throw err;
+    }
+  },
+
+  replaceShare: async (fileId, linkToken, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.put(
+      `/theta-files/s/${encodeURIComponent(fileId)}/${encodeURIComponent(linkToken)}`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+    return response.data;
+  },
 };
+
+export const thetaFileSharePath = (fileId, linkToken) =>
+  `/s/${encodeURIComponent(fileId)}/${encodeURIComponent(linkToken)}`;
+
+export const thetaFileShareUrl = (fileId, linkToken) =>
+  `${window.location.origin}${thetaFileSharePath(fileId, linkToken)}`;
 
 // ==================== STATS SERVICES ====================
 
