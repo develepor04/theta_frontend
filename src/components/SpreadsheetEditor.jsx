@@ -37,6 +37,23 @@ import '../pages/thetaSheets.css';
 
 const SAVE_DEBOUNCE_MS = 500;
 
+function selectSheetHomeCell(workbook, sheet) {
+  if (!sheet?.getRange) return;
+  const range = sheet.getRange(0, 0, 1, 1);
+  if (!range) return;
+  try {
+    if (typeof range.activate === 'function') range.activate();
+    else if (typeof workbook?.setActiveRange === 'function') workbook.setActiveRange(range);
+    else if (typeof sheet.setActiveRange === 'function') sheet.setActiveRange(range);
+    if (typeof sheet.scrollToCell === 'function') sheet.scrollToCell(0, 0);
+    else if (typeof workbook?.scrollToCell === 'function') workbook.scrollToCell(0, 0);
+    range.scrollToVisibleArea?.();
+    range.scrollIntoView?.();
+  } catch {
+    // Facade methods differ by Univer build.
+  }
+}
+
 /** Univer numfmt ribbon items (from @univerjs/sheets-numfmt-ui). */
 const NUMFMT_RIBBON_ITEMS = [
   ['sheet.operation.open.numfmt.panel', 3],
@@ -188,6 +205,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const addRecordOpenRef = useRef(false);
   addRecordOpenRef.current = addRecordOpen;
   const filterUnsupportedToastRef = useRef(false);
+  const ignoreSheetSwitchSelectionRef = useRef(false);
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
@@ -223,7 +241,13 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     setActiveSheetByName: (name) => {
       const workbook = univerAPIRef.current?.getActiveWorkbook();
       const sheet = workbook?.getSheetByName(name);
-      if (sheet) workbook.setActiveSheet(sheet);
+      if (!sheet) return;
+      ignoreSheetSwitchSelectionRef.current = true;
+      workbook.setActiveSheet(sheet);
+      selectSheetHomeCell(workbook, sheet);
+      window.setTimeout(() => {
+        ignoreSheetSwitchSelectionRef.current = false;
+      }, 400);
     },
     renameSheetByName: (oldName, newName) => {
       const next = String(newName ?? '').trim();
@@ -347,8 +371,16 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     }, 0);
 
     const syncActiveSheetName = () => {
-      const name = api.getActiveWorkbook()?.getActiveSheet?.()?.getSheetName?.() || '';
-      setActiveSheetName(name);
+      ignoreSheetSwitchSelectionRef.current = true;
+      const workbook = api.getActiveWorkbook?.();
+      const sheet = workbook?.getActiveSheet?.();
+      setActiveSheetName(sheet?.getSheetName?.() || '');
+      selectSheetHomeCell(workbook, sheet);
+      window.setTimeout(() => {
+        const wb = api.getActiveWorkbook?.();
+        selectSheetHomeCell(wb, wb?.getActiveSheet?.());
+        ignoreSheetSwitchSelectionRef.current = false;
+      }, 80);
     };
 
     const markDirtyAndSave = () => {
@@ -502,6 +534,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     }
 
     const disposable = univerAPI.addEvent(univerAPI.Event.SelectionMoveEnd, (params) => {
+      if (ignoreSheetSwitchSelectionRef.current) return;
       const cfg = formConfigRef.current;
       if (!cfg?.ready || !cfg.fields?.length) return;
 
@@ -549,7 +582,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       }
     }, 280);
     return () => clearTimeout(timer);
-  }, [univerAPI, rowFilter, activeSheetName]);
+  }, [univerAPI, rowFilter]);
 
   function scheduleDebouncedSave() {
     clearTimeout(debounceTimerRef.current);
