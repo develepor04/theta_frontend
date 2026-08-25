@@ -38,7 +38,6 @@ const plans = [
       'Access to uploaded Google Sheets',
       'No Theta Sheets',
       'Professional Services (hours package)',
-      'License rate: 1,200 per annum',
     ],
   },
   {
@@ -52,7 +51,6 @@ const plans = [
       'Professional licenses',
       'Access to Theta Sheets',
       'Professional Services available',
-      '1,500 per annum',
     ],
   },
   {
