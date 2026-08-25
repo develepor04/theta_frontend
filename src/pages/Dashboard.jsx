@@ -18,10 +18,12 @@ import {
   ShieldAlert,
   Image,
   ChevronDown,
+  ArrowLeft,
   Layers,
   EyeOff,
   Link2,
   KeyRound,
+  Lock,
   FolderOpen,
   MoreVertical,
 } from "lucide-react";
@@ -58,6 +60,7 @@ import {
   googleDriveSignInPopup,
 } from "../services/googleConfig";
 import "./Dashboard.css";
+import "./thetaSheets.css";
 
 const GOOGLE_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
 const GOOGLE_DRIVE_SHEET_MIME = "application/vnd.google-apps.spreadsheet";
@@ -421,6 +424,8 @@ const Dashboard = () => {
   const [shareUserResults, setShareUserResults] = useState([]);
   const [shareUsersLoading, setShareUsersLoading] = useState(false);
   const [selectedShareUser, setSelectedShareUser] = useState(null);
+  const [showSharePermissionDialog, setShowSharePermissionDialog] =
+    useState(false);
   const [fileShares, setFileShares] = useState([]);
   const [fileShareOwner, setFileShareOwner] = useState(null);
   const [shareSubmitting, setShareSubmitting] = useState(false);
@@ -431,6 +436,8 @@ const Dashboard = () => {
   const [thetaBrowserSelected, setThetaBrowserSelected] = useState([]); // sheet names
   const [thetaBrowserPreviewIdx, setThetaBrowserPreviewIdx] = useState(0);
   const thetaBrowserEditorRef = useRef(null);
+  const librarySaveTimerRef = useRef(null);
+  const librarySaveInFlightRef = useRef(false);
   // Save -> View Reports: once saved with no edits since, the footer button
   // becomes "View Reports" instead of "Save"; any further edit flips it back.
   const [thetaJustSaved, setThetaJustSaved] = useState(false);
@@ -1298,8 +1305,14 @@ const Dashboard = () => {
       }
       setActiveSheetId(sheet.id);
       setActiveSheetVersion(sheet.version);
-      setActiveSheetData(sheet.data);
-      liveSheetGridRef.current = sheet.data;
+      setActiveSheetData({
+        ...(sheet.data || {}),
+        name: sheet.name || sheet.data?.name || "Theta Sheets",
+      });
+      liveSheetGridRef.current = {
+        ...(sheet.data || {}),
+        name: sheet.name || sheet.data?.name || "Theta Sheets",
+      };
       setThetaEditorValidation(null);
       setShowThetaEditor(true);
     } catch (err) {
@@ -1467,9 +1480,15 @@ const Dashboard = () => {
   }, []);
 
   const searchShareUsers = useCallback(async (query) => {
+    const q = (query || "").trim();
+    if (!q) {
+      setShareUserResults([]);
+      setShareUsersLoading(false);
+      return [];
+    }
     setShareUsersLoading(true);
     try {
-      const data = await thetaFileService.searchShareUsers(query);
+      const data = await thetaFileService.searchShareUsers(q);
       setShareUserResults(data.users || []);
       return data.users || [];
     } catch {
@@ -1508,15 +1527,21 @@ const Dashboard = () => {
     setShareEmail("");
     setSelectedShareUser(null);
     setShareUserResults([]);
+    setShowSharePermissionDialog(false);
     setShowShareModal(true);
     loadFileShares(fileId);
-    searchShareUsers("");
   };
 
   const handleShareEmailChange = (value) => {
     setShareEmail(value);
     setSelectedShareUser(null);
     if (shareSearchTimerRef.current) clearTimeout(shareSearchTimerRef.current);
+    const q = (value || "").trim();
+    if (!q) {
+      setShareUserResults([]);
+      setShareUsersLoading(false);
+      return;
+    }
     shareSearchTimerRef.current = setTimeout(() => {
       searchShareUsers(value);
     }, 250);
@@ -1599,8 +1624,8 @@ const Dashboard = () => {
         setShareEmail("");
         setSelectedShareUser(null);
         setShareUserResults([]);
+        setShowSharePermissionDialog(false);
         await loadFileShares(fileId);
-        searchShareUsers("");
         return;
       }
       const result = await thetaFileService.share(fileId, {
@@ -1619,8 +1644,8 @@ const Dashboard = () => {
       setShareEmail("");
       setSelectedShareUser(null);
       setShareUserResults([]);
+      setShowSharePermissionDialog(false);
       await loadFileShares(fileId);
-      searchShareUsers("");
     } catch (err) {
       const status = err?.response?.status;
       const apiError = err?.response?.data?.error;
@@ -2002,14 +2027,14 @@ const Dashboard = () => {
         activeSheetVersion,
       );
       setActiveSheetVersion(saved.version);
-      setActiveSheetData(saved.data);
-      liveSheetGridRef.current = saved.data;
+      setActiveSheetData(grid);
+      liveSheetGridRef.current = grid;
     } else {
       const saved = await sheetService.createActiveSheet("Theta Sheets", grid);
       setActiveSheetId(saved.id);
       setActiveSheetVersion(saved.version);
-      setActiveSheetData(saved.data);
-      liveSheetGridRef.current = saved.data;
+      setActiveSheetData(saved.data || grid);
+      liveSheetGridRef.current = saved.data || grid;
     }
     return true;
   };
@@ -2030,6 +2055,32 @@ const Dashboard = () => {
       linkToken: thetaShareLinkToken || undefined,
     });
     return true;
+  };
+
+  const flushLibraryAutosave = async () => {
+    if (!thetaBrowserFileId || !canEditOpenedFile) return;
+    if (librarySaveInFlightRef.current) return;
+    const liveGrid = thetaBrowserEditorRef.current?.getGrid();
+    const sheets = liveGrid?.sheets;
+    if (!Array.isArray(sheets) || sheets.length === 0) return;
+    librarySaveInFlightRef.current = true;
+    try {
+      await persistLibraryWorkbook(sheets);
+      setThetaJustSaved(true);
+    } catch {
+      setThetaJustSaved(false);
+    } finally {
+      librarySaveInFlightRef.current = false;
+    }
+  };
+
+  const scheduleLibraryAutosave = () => {
+    setThetaJustSaved(false);
+    if (!thetaBrowserFileId || !canEditOpenedFile) return;
+    if (librarySaveTimerRef.current) clearTimeout(librarySaveTimerRef.current);
+    librarySaveTimerRef.current = setTimeout(() => {
+      flushLibraryAutosave();
+    }, 800);
   };
 
   const downloadOpenedThetaFile = async () => {
@@ -2128,6 +2179,9 @@ const Dashboard = () => {
     setThetaFileMenuId(null);
     setShowShareModal(false);
     setThetaShareLinkToken("");
+    if (librarySaveTimerRef.current) {
+      clearTimeout(librarySaveTimerRef.current);
+    }
   };
 
   // Merge the selected (possibly edited) sheets into one grid, aligning
@@ -2153,31 +2207,37 @@ const Dashboard = () => {
 
     setThetaEditorLoading(true);
     try {
-      // Keep the company library workbook in sync so reopen reflects sheet
-      // deletes/renames/edits (not only the merged active Theta Sheet).
-      let librarySaved = false;
-      if (thetaBrowserFileId) {
-        if (!canEditOpenedFile) {
-          toast.error("Viewer access cannot save this file.");
-          return;
-        }
-        await persistLibraryWorkbook(liveSheets);
-        librarySaved = true;
+      if (librarySaveTimerRef.current) {
+        clearTimeout(librarySaveTimerRef.current);
       }
+      if (thetaBrowserFileId && !canEditOpenedFile) {
+        toast.error("Viewer access cannot save this file.");
+        return;
+      }
+      const libraryPromise = thetaBrowserFileId
+        ? persistLibraryWorkbook(liveSheets)
+        : Promise.resolve(false);
+      let librarySaved = false;
+      let ok = true;
       if (skipLiveSheetMerge) {
+        librarySaved = Boolean(await libraryPromise);
         setThetaJustSaved(false);
         toast.success("File saved.");
         return;
       }
-      // Schedule-column modal is for active-sheet sync only. Never block the
-      // library Save UX with it when the workbook was already written.
-      const ok = await persistSelectedThetaSheets(
+      const sheetPromise = persistSelectedThetaSheets(
         liveSheets,
         thetaBrowserSelected,
         {
-          showValidationErrors: !librarySaved,
+          showValidationErrors: !thetaBrowserFileId,
         },
       );
+      const [libResult, sheetResult] = await Promise.all([
+        libraryPromise,
+        sheetPromise,
+      ]);
+      librarySaved = Boolean(libResult);
+      ok = sheetResult;
       if (ok) {
         setThetaJustSaved(true);
         toast.success("Theta Sheet saved.");
@@ -3062,19 +3122,17 @@ const Dashboard = () => {
       ══════════════════════════════════════════════════════════════════════ */}
       {showThetaEditor && (
         <div
+          className="ts-workspace"
           style={{
             position: "fixed",
             inset: 0,
-            background: "#fff",
             zIndex: 1600,
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            flexDirection: "column",
           }}
         >
           <div
             style={{
-              background: "#fff",
               width: "100%",
               height: "100%",
               display: "flex",
@@ -3082,54 +3140,31 @@ const Dashboard = () => {
               overflow: "hidden",
             }}
           >
-            <div
-              style={{
-                background: "linear-gradient(135deg, #1e293b, #0f172a)",
-                padding: "16px 22px",
-                flexShrink: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <FileSpreadsheet size={18} color="#c084fc" />
-                <span
-                  style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15 }}
-                >
-                  Theta Sheets
+            <div className="ts-workspace-header">
+              <div className="ts-workspace-title">
+                <FileSpreadsheet size={16} color="#059669" />
+                <span className="ts-workspace-crumb">Theta Sheets</span>
+                <span className="ts-workspace-filename">
+                  {activeSheetData?.name || "Theta Sheets"}
                 </span>
               </div>
-              <button
-                onClick={closeThetaEditor}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#94a3b8",
-                  cursor: "pointer",
-                }}
-              >
-                <X size={20} />
-              </button>
+              <div className="ts-workspace-actions">
+                <button
+                  type="button"
+                  className="ts-btn ts-btn-ghost"
+                  onClick={closeThetaEditor}
+                  aria-label="Close"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
             {thetaEditorValidation && !thetaEditorValidation.isValid && (
               <div
+                className="ts-banner"
                 onClick={() => {
                   setValidationReportErrors(thetaEditorValidation.errors);
                   setShowValidationReport(true);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "9px 22px",
-                  background: "#fffbeb",
-                  borderBottom: "1px solid #fde68a",
-                  color: "#92400e",
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  flexShrink: 0,
                 }}
               >
                 <AlertCircle size={14} />
@@ -3138,7 +3173,7 @@ const Dashboard = () => {
                 sheet — click to review
               </div>
             )}
-            <div style={{ flex: 1, minHeight: 0, padding: 16 }}>
+            <div className="ts-workspace-body" style={{ flex: 1, minHeight: 0 }}>
               <SpreadsheetEditor
                 ref={spreadsheetEditorRef}
                 key={activeSheetId}
@@ -3151,58 +3186,26 @@ const Dashboard = () => {
                   if (grid) setActiveSheetData(grid);
                 }}
                 onSaved={(saved) => {
-                  setActiveSheetVersion(saved.version);
-                  if (saved?.data) {
-                    setActiveSheetData(saved.data);
-                    liveSheetGridRef.current = saved.data;
+                  if (saved?.version != null) {
+                    setActiveSheetVersion(saved.version);
                   }
                 }}
                 onValidation={setThetaEditorValidation}
                 height="100%"
               />
             </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "flex-end",
-                gap: 10,
-                padding: "13px 20px",
-                borderTop: "1px solid #e2e8f0",
-                flexShrink: 0,
-              }}
-            >
+            <div className="ts-workspace-footer" style={{ justifyContent: "flex-end" }}>
               <button
+                type="button"
+                className="ts-btn ts-btn-secondary"
                 onClick={closeThetaEditor}
-                style={{
-                  padding: "8px 18px",
-                  background: "#f1f5f9",
-                  border: "none",
-                  borderRadius: 8,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: "#475569",
-                  cursor: "pointer",
-                }}
               >
                 Close
               </button>
               <button
+                type="button"
+                className="ts-btn ts-btn-primary"
                 onClick={handleTransformThetaSheet}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 7,
-                  padding: "8px 20px",
-                  background: INGEST_PRIMARY_BG,
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 8,
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  boxShadow: INGEST_PRIMARY_SHADOW,
-                }}
               >
                 <TrendingUp size={14} /> Transform Data
               </button>
@@ -5510,11 +5513,11 @@ const Dashboard = () => {
           const isSheetsStep = thetaBrowserStep === "pickSheets";
           return (
             <div
+              className="ts-workspace"
               style={{
                 position: "fixed",
                 inset: 0,
                 zIndex: 1650,
-                background: "#fff",
                 display: "flex",
                 flexDirection: "column",
               }}
@@ -5537,20 +5540,8 @@ const Dashboard = () => {
                 }}
               >
                 {/* Header — cloud for library browse; Theta Sheets icon once a file is open */}
-                <div
-                  style={{
-                    padding: "14px 20px",
-                    borderBottom: "1px solid #e2e8f0",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    background: "#fafbfc",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 10 }}
-                  >
+                <div className="ts-workspace-header">
+                  <div className="ts-workspace-title">
                     <img
                       src={
                         isSheetsStep
@@ -5558,15 +5549,12 @@ const Dashboard = () => {
                           : "/assets/theta_sheets_cloud_icon.png"
                       }
                       alt=""
-                      style={{ width: 20, height: 20, objectFit: "contain" }}
+                      style={{ width: 18, height: 18, objectFit: "contain" }}
                     />
-                    <span
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: "#0f172a",
-                      }}
-                    >
+                    <span className="ts-workspace-crumb">
+                      {isSheetsStep ? "Theta Sheets" : "Library"}
+                    </span>
+                    <span className="ts-workspace-filename">
                       {isSheetsStep
                         ? thetaBrowserFileName || "Choose data"
                         : "Browse theta cloud"}
@@ -5604,81 +5592,42 @@ const Dashboard = () => {
                     )}
                   </div>
 
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
+                  <div className="ts-workspace-actions">
                     <button
+                      type="button"
+                      className="ts-btn ts-btn-ghost"
                       onClick={closeThetaBrowser}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "#64748b",
-                        padding: 4,
-                      }}
+                      aria-label="Close"
                     >
                       <X size={18} />
                     </button>
                   </div>
                 </div>
 
-                {showShareModal && (
+                {showShareModal && !showSharePermissionDialog && (
                   <div
-                    onClick={() => setShowShareModal(false)}
-                    style={{
-                      position: "fixed",
-                      inset: 0,
-                      background: "rgba(15, 23, 42, 0.45)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      zIndex: 3000,
+                    className="ts-gshare-backdrop"
+                    onClick={() => {
+                      setShowShareModal(false);
+                      setShowSharePermissionDialog(false);
                     }}
                   >
                     <div
+                      className="ts-gshare-card"
                       onClick={(e) => e.stopPropagation()}
-                      style={{
-                        width: 540,
-                        background: "#fff",
-                        borderRadius: 16,
-                        padding: 24,
-                        boxShadow: "0 20px 50px rgba(0,0,0,0.2)",
-                      }}
                     >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "flex-start",
-                          gap: 16,
-                          marginBottom: 16,
-                        }}
-                      >
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontSize: 20,
-                              fontWeight: 700,
-                              color: "#0f172a",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            Share "{thetaBrowserFileName || "This file"}"
-                          </div>
+                      <div className="ts-gshare-head">
+                        <div className="ts-gshare-title">
+                          Share "{thetaBrowserFileName || "This file"}"
                         </div>
-
                         <button
                           type="button"
-                          onClick={() => setShowShareModal(false)}
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            fontSize: 22,
-                            cursor: "pointer",
-                            color: "#64748b",
+                          className="ts-gshare-iconbtn"
+                          onClick={() => {
+                            setShowShareModal(false);
+                            setShowSharePermissionDialog(false);
                           }}
+                          aria-label="Close"
                         >
                           ×
                         </button>
@@ -5686,88 +5635,34 @@ const Dashboard = () => {
 
                       {/* People */}
                       {canAddSharePeople && (
-                      <div style={{ marginBottom: 18 }}>
-                        <div
-                          style={{
-                            position: "relative",
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: 8,
-                              alignItems: "center",
-                            }}
-                          >
-                            <input
-                              type="text"
-                              value={
-                                selectedShareUser
-                                  ? selectedShareUser.name ||
-                                    selectedShareUser.email
-                                  : shareEmail
-                              }
-                              onChange={(e) =>
-                                handleShareEmailChange(e.target.value)
-                              }
-                              placeholder="Add people, groups, spaces, and calendar events"
-                              style={{
-                                flex: 1,
-                                minWidth: 0,
-                                boxSizing: "border-box",
-                                padding: "10px 12px",
-                                border: "1px solid #cbd5e1",
-                                borderRadius: 7,
-                                fontSize: 13,
-                              }}
-                            />
-                            <select
-                              value={sharePermission}
-                              onChange={(e) =>
-                                setSharePermission(e.target.value)
-                              }
-                              title="Permission for this person"
-                              style={{
-                                flexShrink: 0,
-                                width: 110,
-                                padding: "10px 8px",
-                                border: "1px solid #cbd5e1",
-                                borderRadius: 7,
-                                fontSize: 13,
-                                background: "#fff",
-                              }}
-                            >
-                              <option value="viewer">Viewer</option>
-                              <option value="editor">Editor</option>
-                            </select>
-                          </div>
-                          {(shareUsersLoading ||
-                            visibleShareUserResults.length > 0) &&
+                      <div className="ts-gshare-field">
+                          <span className="ts-gshare-float">
+                            Add people, groups, spaces, and calendar events
+                          </span>
+                          <input
+                            type="text"
+                            className="ts-gshare-input"
+                            value={
+                              selectedShareUser
+                                ? selectedShareUser.name ||
+                                  selectedShareUser.email
+                                : shareEmail
+                            }
+                            onChange={(e) =>
+                              handleShareEmailChange(e.target.value)
+                            }
+                            placeholder=""
+                          />
+                          {(shareEmail || "").trim() &&
                             !selectedShareUser && (
-                              <div
-                                style={{
-                                  position: "absolute",
-                                  top: "calc(100% + 4px)",
-                                  left: 0,
-                                  right: 0,
-                                  maxHeight: 180,
-                                  overflowY: "auto",
-                                  background: "#fff",
-                                  border: "1px solid #e2e8f0",
-                                  borderRadius: 8,
-                                  boxShadow: "0 10px 24px rgba(15,23,42,0.12)",
-                                  zIndex: 20,
-                                }}
-                              >
+                              <div className="ts-gshare-suggest">
                                 {shareUsersLoading ? (
-                                  <div
-                                    style={{
-                                      padding: "10px 12px",
-                                      fontSize: 12,
-                                      color: "#94a3b8",
-                                    }}
-                                  >
+                                  <div className="ts-gshare-suggest-msg">
                                     Searching…
+                                  </div>
+                                ) : visibleShareUserResults.length === 0 ? (
+                                  <div className="ts-gshare-suggest-msg">
+                                    No people found
                                   </div>
                                 ) : (
                                   visibleShareUserResults.map((u) => {
@@ -5781,44 +5676,30 @@ const Dashboard = () => {
                                     <button
                                       key={u.id}
                                       type="button"
+                                      className="ts-gshare-suggest-row"
                                       onClick={() => {
                                         setSelectedShareUser(u);
                                         setShareEmail(u.email || "");
-                                        // Keep current role if already shared so user can change Viewer ↔ Editor then Update.
                                         setSharePermission(
                                           existing?.permission || "viewer",
                                         );
                                         setShareUserResults([]);
-                                      }}
-                                      style={{
-                                        width: "100%",
-                                        textAlign: "left",
-                                        padding: "8px 12px",
-                                        border: "none",
-                                        background: "transparent",
-                                        cursor: "pointer",
+                                        setShowSharePermissionDialog(true);
                                       }}
                                     >
-                                      <div
-                                        style={{
-                                          fontSize: 13,
-                                          fontWeight: 600,
-                                          color: "#0f172a",
-                                        }}
-                                      >
+                                      <div className="ts-gshare-avatar ts-gshare-avatar--muted">
+                                        {getInitials(u.name || u.email)}
+                                      </div>
+                                      <div>
+                                      <div className="ts-gshare-suggest-name">
                                         {u.name || u.email}
                                       </div>
-                                      <div
-                                        style={{
-                                          fontSize: 12,
-                                          color: "#64748b",
-                                          marginTop: 2,
-                                        }}
-                                      >
+                                      <div className="ts-gshare-suggest-email">
                                         {u.email}
                                         {existing?.permission
                                           ? ` · already ${existing.permission}`
                                           : ""}
+                                      </div>
                                       </div>
                                     </button>
                                     );
@@ -5826,54 +5707,19 @@ const Dashboard = () => {
                                 )}
                               </div>
                             )}
-                        </div>
                       </div>
                       )}
 
                       {/* People with access */}
-                      <div style={{ marginBottom: 20 }}>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: "#334155",
-                            marginBottom: 10,
-                          }}
-                        >
+                      <div className="ts-gshare-body">
+                        <div className="ts-gshare-section">
                           People with access
                         </div>
 
                         {(fileShareOwner || isShareOwner) && (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            padding: "10px 0",
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 12,
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: 28,
-                                height: 28,
-                                borderRadius: 999,
-                                background: "#e0f2fe",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                fontWeight: 700,
-                                color: "#0369a1",
-                                fontSize: 12,
-                                flexShrink: 0,
-                              }}
-                            >
+                        <div className="ts-gshare-person">
+                          <div className="ts-gshare-person-left">
+                            <div className="ts-gshare-avatar">
                               {getInitials(
                                 fileShareOwner?.name ||
                                   fileShareOwner?.email ||
@@ -5881,48 +5727,25 @@ const Dashboard = () => {
                                   "Owner",
                               )}
                             </div>
-
                             <div>
-                              <div
-                                style={{
-                                  fontSize: 13,
-                                  fontWeight: 600,
-                                  color: "#0f172a",
-                                }}
-                              >
+                              <div className="ts-gshare-name">
                                 {fileShareOwner &&
                                 String(fileShareOwner.id) ===
                                   String(user?.id || "")
-                                  ? "You"
+                                  ? `${fileShareOwner?.name || user?.name || "You"} (you)`
                                   : fileShareOwner?.name ||
                                     fileShareOwner?.email ||
                                     user?.name ||
                                     "Owner"}
                               </div>
-
-                              <div
-                                style={{
-                                  fontSize: 12,
-                                  color: "#64748b",
-                                  marginTop: 3,
-                                }}
-                              >
+                              <div className="ts-gshare-email">
                                 {fileShareOwner?.email ||
                                   user?.email ||
                                   "Owner"}
                               </div>
                             </div>
                           </div>
-
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 600,
-                              color: "#64748b",
-                            }}
-                          >
-                            Owner
-                          </div>
+                          <div className="ts-gshare-role">Owner</div>
                         </div>
                         )}
                         {fileShares
@@ -5938,89 +5761,33 @@ const Dashboard = () => {
                           return (
                           <div
                             key={share.id || share.user_id}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              padding: "10px 0",
-                              borderTop: "1px solid #f1f5f9",
-                            }}
+                            className="ts-gshare-person"
                           >
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 12,
-                              }}
-                            >
-                              <div
-                                style={{
-                                  width: 28,
-                                  height: 28,
-                                  borderRadius: 999,
-                                  background: "#f1f5f9",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  fontWeight: 700,
-                                  color: "#0f172a",
-                                  fontSize: 12,
-                                  flexShrink: 0,
-                                }}
-                              >
+                            <div className="ts-gshare-person-left">
+                              <div className="ts-gshare-avatar ts-gshare-avatar--muted">
                                 {getInitials(share.name || share.email)}
                               </div>
-
                               <div>
-                                <div
-                                  style={{
-                                    fontSize: 13,
-                                    fontWeight: 600,
-                                    color: "#0f172a",
-                                  }}
-                                >
+                                <div className="ts-gshare-name">
                                   {share.name || share.email}
                                 </div>
-                                <div
-                                  style={{
-                                    fontSize: 12,
-                                    color: "#64748b",
-                                    marginTop: 3,
-                                  }}
-                                >
+                                <div className="ts-gshare-email">
                                   {share.email}
                                 </div>
                               </div>
                             </div>
                             {share.pending ? (
-                            <div
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: "#64748b",
-                                textTransform: "capitalize",
-                              }}
-                            >
+                            <div className="ts-gshare-role">
                               {`Invited · ${currentPerm}`}
                             </div>
                             ) : isShareOwner || isFileRecordOwner ? (
                               <select
+                                className="ts-gshare-role"
                                 value={currentPerm}
                                 disabled={shareSubmitting}
                                 onChange={(e) => {
                                   const next = e.target.value;
                                   handleShareRoleAction(share, next);
-                                }}
-                                style={{
-                                  fontSize: 13,
-                                  fontWeight: 600,
-                                  color: "#334155",
-                                  textTransform: "capitalize",
-                                  border: "1px solid #e2e8f0",
-                                  borderRadius: 6,
-                                  padding: "4px 8px",
-                                  background: "#fff",
-                                  maxWidth: 160,
                                 }}
                               >
                                 <option value="viewer">Viewer</option>
@@ -6035,77 +5802,35 @@ const Dashboard = () => {
                             ) : canTransferOwnership && share.user_id ? (
                               <button
                                 type="button"
+                                className="ts-gshare-role"
                                 disabled={shareSubmitting}
                                 onClick={() =>
                                   handleShareRoleAction(share, "make_owner")
                                 }
-                                style={{
-                                  fontSize: 13,
-                                  fontWeight: 600,
-                                  color: "#334155",
-                                  border: "1px solid #e2e8f0",
-                                  borderRadius: 6,
-                                  padding: "4px 10px",
-                                  background: "#fff",
-                                  cursor: shareSubmitting
-                                    ? "default"
-                                    : "pointer",
-                                }}
                               >
                                 Make owner
                               </button>
                             ) : (
-                            <div
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: "#64748b",
-                                textTransform: "capitalize",
-                              }}
-                            >
+                            <div className="ts-gshare-role">
                               {currentPerm}
                             </div>
                             )}
                           </div>
                           );
                         })}
-                      </div>
 
                       {/* General access */}
-                      <div style={{ marginBottom: 24 }}>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: "#334155",
-                            marginBottom: 8,
-                          }}
-                        >
+                      <div style={{ marginTop: 16 }}>
+                        <div className="ts-gshare-section">
                           General access
                         </div>
-
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: 8,
-                            alignItems: "center",
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: 32,
-                              height: 32,
-                              borderRadius: 999,
-                              background: "#f1f5f9",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              flexShrink: 0,
-                            }}
-                          >
-                            <KeyRound size={16} style={{ color: "#64748b" }} />
+                        <div className="ts-gshare-access">
+                          <div className="ts-gshare-lock">
+                            <Lock size={18} />
                           </div>
+                          <div>
                           <select
+                            className="ts-gshare-role"
                             value={generalAccess}
                             disabled={!canChangeGeneralAccess || shareSubmitting}
                             onChange={(e) => {
@@ -6117,17 +5842,6 @@ const Dashboard = () => {
                                   : shareLinkPermission || "viewer",
                               );
                             }}
-                            style={{
-                              width: 210,
-                              padding: "10px 12px",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: 7,
-                              fontSize: 13,
-                              background: canChangeGeneralAccess
-                                ? "#fff"
-                                : "#f8fafc",
-                              color: "#0f172a",
-                            }}
                           >
                             {GENERAL_ACCESS_OPTIONS.map((opt) => (
                               <option key={opt.value} value={opt.value}>
@@ -6137,6 +5851,7 @@ const Dashboard = () => {
                           </select>
                           {generalAccess !== "restricted" && (
                             <select
+                              className="ts-gshare-role"
                               value={shareLinkPermission}
                               disabled={
                                 !canChangeGeneralAccess || shareSubmitting
@@ -6148,31 +5863,12 @@ const Dashboard = () => {
                                 )
                               }
                               title="Role for people who open this link"
-                              style={{
-                                flexShrink: 0,
-                                width: 110,
-                                padding: "10px 8px",
-                                border: "1px solid #cbd5e1",
-                                borderRadius: 7,
-                                fontSize: 13,
-                                background: canChangeGeneralAccess
-                                  ? "#fff"
-                                  : "#f8fafc",
-                              }}
                             >
                               <option value="viewer">Viewer</option>
                               <option value="editor">Editor</option>
                             </select>
                           )}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: "#64748b",
-                            marginTop: 8,
-                            lineHeight: 1.45,
-                          }}
-                        >
+                        <div className="ts-gshare-help">
                           {generalAccess === "restricted"
                             ? (
                                 GENERAL_ACCESS_OPTIONS.find(
@@ -6189,60 +5885,35 @@ const Dashboard = () => {
                                   : "view"
                               }.`}
                         </div>
+                          </div>
+                        </div>
+                      </div>
                       </div>
 
                       {/* Buttons */}
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 10,
-                          marginTop: 8,
-                        }}
-                      >
+                      <div className="ts-gshare-footer">
                         <button
                           type="button"
+                          className="ts-gshare-copy"
                           onClick={() => copyThetaShareLink()}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "9px 14px",
-                            border: "1px solid #cbd5e1",
-                            borderRadius: 999,
-                            background: "#fff",
-                            color: "#334155",
-                            cursor: "pointer",
-                            fontWeight: 600,
-                          }}
                         >
-                          <Link2 size={14} />
+                          <Link2 size={16} />
                           Copy link
                         </button>
 
                         <button
                           type="button"
+                          className="ts-gshare-done"
                           disabled={shareSubmitting}
                           onClick={async () => {
                             const typedEmail = (shareEmail || "").trim();
                             const looksLikeEmail =
                               /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail);
                             if (selectedShareUser || looksLikeEmail) {
-                              await handleAddSharePerson();
+                              setShowSharePermissionDialog(true);
                               return;
                             }
                             setShowShareModal(false);
-                          }}
-                          style={{
-                            padding: "9px 16px",
-                            border: "none",
-                            borderRadius: 10,
-                            background: "#1a73e8",
-                            color: "#fff",
-                            cursor: shareSubmitting ? "default" : "pointer",
-                            fontWeight: 700,
-                            opacity: shareSubmitting ? 0.75 : 1,
                           }}
                         >
                           {shareSubmitting
@@ -6257,6 +5928,157 @@ const Dashboard = () => {
                                 ? "Update"
                                 : "Add"
                               : "Done"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {showShareModal && showSharePermissionDialog && (
+                  <div
+                    className="ts-gshare-backdrop ts-gshare-backdrop--perm"
+                    onClick={() => {
+                      setShowSharePermissionDialog(false);
+                      setSelectedShareUser(null);
+                      setShareEmail("");
+                      setShareUserResults([]);
+                      setSharePermission("viewer");
+                    }}
+                  >
+                    <div
+                      className="ts-gshare-card"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="ts-gshare-head">
+                        <button
+                          type="button"
+                          className="ts-gshare-iconbtn"
+                          onClick={() => {
+                            setShowSharePermissionDialog(false);
+                            setSelectedShareUser(null);
+                            setShareEmail("");
+                            setShareUserResults([]);
+                            setSharePermission("viewer");
+                          }}
+                          aria-label="Back"
+                        >
+                          <ArrowLeft size={20} />
+                        </button>
+                        <div className="ts-gshare-title">
+                          Share "{thetaBrowserFileName || "This file"}"
+                        </div>
+                        <button
+                          type="button"
+                          className="ts-gshare-iconbtn"
+                          onClick={() => {
+                            setShowSharePermissionDialog(false);
+                            setSelectedShareUser(null);
+                            setShareEmail("");
+                            setShareUserResults([]);
+                            setSharePermission("viewer");
+                          }}
+                          aria-label="Close"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="ts-gshare-field">
+                        <span className="ts-gshare-float">
+                          Add people, groups, spaces, and calendar events
+                        </span>
+                        <div
+                          className="ts-gshare-input"
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            height: "auto",
+                            minHeight: 48,
+                            padding: "8px 12px",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 8,
+                              background: "#e8f0fe",
+                              color: "#174ea6",
+                              borderRadius: 16,
+                              padding: "4px 10px 4px 4px",
+                              fontSize: 13,
+                              fontWeight: 500,
+                            }}
+                          >
+                            <span className="ts-gshare-avatar" style={{ width: 24, height: 24, fontSize: 11 }}>
+                              {getInitials(
+                                selectedShareUser?.name ||
+                                  selectedShareUser?.email ||
+                                  shareEmail,
+                              )}
+                            </span>
+                            {selectedShareUser?.name ||
+                              selectedShareUser?.email ||
+                              (shareEmail || "").trim()}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="ts-gshare-section">
+                        Permission
+                      </div>
+                      <div>
+                        {[
+                          {
+                            value: "viewer",
+                            label: "Viewer",
+                            hint: "Can open and view this file",
+                          },
+                          {
+                            value: "editor",
+                            label: "Editor",
+                            hint: "Can edit and save this file",
+                          },
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            className={`ts-gshare-perm-opt${
+                              sharePermission === opt.value ? " is-on" : ""
+                            }`}
+                            onClick={() => setSharePermission(opt.value)}
+                          >
+                            <strong>{opt.label}</strong>
+                            <span>{opt.hint}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      <div className="ts-gshare-footer" style={{ justifyContent: "flex-end" }}>
+                        <button
+                          type="button"
+                          className="ts-gshare-cancel"
+                          onClick={() => {
+                            setShowSharePermissionDialog(false);
+                            setSelectedShareUser(null);
+                            setShareEmail("");
+                            setShareUserResults([]);
+                            setSharePermission("viewer");
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="ts-gshare-send"
+                          disabled={shareSubmitting}
+                          onClick={() => handleAddSharePerson()}
+                        >
+                          {shareSubmitting
+                            ? existingShareToUpdate
+                              ? "Updating…"
+                              : "Sending…"
+                            : existingShareToUpdate
+                              ? "Update"
+                              : "Send"}
                         </button>
                       </div>
                     </div>
@@ -6309,32 +6131,17 @@ const Dashboard = () => {
                       </button>
                     </div>
                     {isLoadingThetaLibrary ? (
-                      <div
-                        style={{
-                          textAlign: "center",
-                          padding: "52px 0",
-                          color: "#94a3b8",
-                          fontSize: 13,
-                        }}
-                      >
-                        <Loader2
-                          size={20}
-                          className="spinning"
-                          style={{ margin: "0 auto 8px" }}
-                        />
-                        Loading files…
+                      <div className="ts-empty">
+                        <Loader2 size={20} className="spinning" />
+                        <strong>Loading library</strong>
+                        <span>Fetching workbooks from Theta Sheets…</span>
                       </div>
                     ) : serverFiles.length === 0 ? (
-                      <div
-                        style={{
-                          textAlign: "center",
-                          padding: "52px 20px",
-                          color: "#94a3b8",
-                          fontSize: 13,
-                        }}
-                      >
-                        No Excel files in your Theta library yet. Click{" "}
-                        <strong>Upload</strong> to add one.
+                      <div className="ts-empty">
+                        <strong>No Excel files yet</strong>
+                        <span>
+                          Click Upload to add a workbook to your Theta library.
+                        </span>
                       </div>
                     ) : (
                       <div style={{ position: "relative", minHeight: 160 }}>
@@ -6747,26 +6554,19 @@ const Dashboard = () => {
                       }}
                     >
                       {thetaBrowserSheets.length === 0 ? (
-                        <div
-                          style={{
-                            flex: 1,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "#94a3b8",
-                            fontSize: 13,
-                          }}
-                        >
-                          Select a sheet to preview and edit it
+                        <div className="ts-empty">
+                          <strong>No sheets in this file</strong>
+                          <span>Select another workbook from the library.</span>
                         </div>
                       ) : (
                         <div
                           style={{
                             flex: 1,
                             minHeight: 0,
-                            border: "1px solid #e2e8f0",
+                            border: "1px solid var(--ts-line, #e2e8f0)",
                             borderRadius: 8,
                             overflow: "hidden",
+                            background: "#fff",
                           }}
                         >
                           <SpreadsheetEditor
@@ -6802,7 +6602,7 @@ const Dashboard = () => {
                                     )
                                 : undefined
                             }
-                            onDirty={() => setThetaJustSaved(false)}
+                            onDirty={scheduleLibraryAutosave}
                             onSheetRenamed={handleThetaSheetRenamed}
                             onSheetsChange={handleThetaSheetsChange}
                             onSheetDeleted={
@@ -6819,33 +6619,15 @@ const Dashboard = () => {
                 )}
 
                 {/* Footer */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "11px 20px",
-                    borderTop: "1px solid #e2e8f0",
-                    flexShrink: 0,
-                    background: "#fafbfc",
-                  }}
-                >
+                <div className="ts-workspace-footer">
                   <button
+                    type="button"
+                    className="ts-btn ts-btn-secondary"
                     onClick={
                       thetaBrowserStep === "pickSheets"
                         ? () => setThetaBrowserStep("pickFile")
                         : closeThetaBrowser
                     }
-                    style={{
-                      padding: "7px 16px",
-                      background: "#fff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 8,
-                      fontSize: 12.5,
-                      fontWeight: 500,
-                      color: "#334155",
-                      cursor: "pointer",
-                    }}
                   >
                     {thetaBrowserStep === "pickSheets" ? "Back" : "Cancel"}
                   </button>

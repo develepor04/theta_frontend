@@ -33,6 +33,7 @@ import {
   useFormConfig,
 } from '../features/sheet-form';
 import { readRowValues, rowHasData } from '../features/sheet-form/rowValues';
+import '../pages/thetaSheets.css';
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -781,27 +782,18 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   });
 
   return (
-    <div style={{ height, width: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '0 8px 8px' }}>
+    <div
+      className={`ts-editor${readOnly ? ' ts-editor--readonly' : ''}`}
+      style={{ height, width: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}
+    >
+      <div className="ts-editor-toolbar">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {(onCopyLink || onShare || onFileDelete) && (
             <div ref={fileMenuRef} style={{ position: 'relative' }}>
               <button
                 type="button"
+                className="ts-btn ts-btn-secondary"
                 onClick={() => setShowFileMenu((open) => !open)}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '6px 12px',
-                  background: '#fff',
-                  color: '#334155',
-                  border: '1px solid #d1d5db',
-                  borderRadius: 7,
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
               >
                 File
                 <span style={{ fontSize: 10, lineHeight: 1 }}>▾</span>
@@ -908,12 +900,8 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
               />
               <button
                 type="button"
+                className="ts-btn ts-btn-secondary"
                 onClick={triggerImport}
-                style={{
-                  padding: '6px 14px', background: '#f1f5f9', color: '#334155',
-                  border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 12.5,
-                  fontWeight: 600, cursor: 'pointer',
-                }}
               >
                 Import file
               </button>
