@@ -28,11 +28,11 @@ import {
 } from '../utils/dateFormats';
 import { validateSheetGrid } from '../utils/thetaValidation';
 import {
-  AddRecordButton,
   AddRecordPanel,
   useFormConfig,
 } from '../features/sheet-form';
 import { readRowValues, rowHasData } from '../features/sheet-form/rowValues';
+import { applySheetRowTextFilter } from '../features/sheet-form/applySheetRowTextFilter';
 import '../pages/thetaSheets.css';
 
 const SAVE_DEBOUNCE_MS = 500;
@@ -148,6 +148,8 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   hideToolbar = false,
   readOnly = false,
   height = '600px',
+  isFullscreen = false,
+  onToggleFullscreen,
 }, ref) {
   const containerRef = useRef(null);
   const univerRef = useRef(null);
@@ -160,13 +162,18 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   const dirtyRef = useRef(false);
   const fileInputRef = useRef(null);
   const fileMenuRef = useRef(null);
+  const viewMenuRef = useRef(null);
+  const editMenuRef = useRef(null);
   const [remountKey, setRemountKey] = useState(0);
   const [localData, setLocalData] = useState(() => initialData || blankGrid());
   // Excel-style sheet-tab context menu (portaled above Theta overlays)
   const [sheetMenu, setSheetMenu] = useState(null); // { x, y, sheetId, sheetName, canDelete }
   const [showFileMenu, setShowFileMenu] = useState(false);
+  const [showViewMenu, setShowViewMenu] = useState(false);
+  const [showEditMenu, setShowEditMenu] = useState(false);
   const [univerAPI, setUniverAPI] = useState(null);
   const [addRecordOpen, setAddRecordOpen] = useState(false);
+  const [rowFilter, setRowFilter] = useState('');
   const [editingRow, setEditingRow] = useState(null);
   const [editFormValues, setEditFormValues] = useState(null);
   const [activeSheetName, setActiveSheetName] = useState('');
@@ -180,6 +187,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
   editingRowRef.current = editingRow;
   const addRecordOpenRef = useRef(false);
   addRecordOpenRef.current = addRecordOpen;
+  const filterUnsupportedToastRef = useRef(false);
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
@@ -245,6 +253,28 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showFileMenu]);
+
+  useEffect(() => {
+    if (!showViewMenu) return;
+    const handleClickOutside = (e) => {
+      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target)) {
+        setShowViewMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showViewMenu]);
+
+  useEffect(() => {
+    if (!showEditMenu) return;
+    const handleClickOutside = (e) => {
+      if (editMenuRef.current && !editMenuRef.current.contains(e.target)) {
+        setShowEditMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showEditMenu]);
 
   // Keep Univer popups/dropdowns above the Theta Sheets full-screen overlay (z=1650).
   // Formats / font / color menus use Radix portals with univer-z-[1080], which otherwise
@@ -472,7 +502,6 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     }
 
     const disposable = univerAPI.addEvent(univerAPI.Event.SelectionMoveEnd, (params) => {
-      if (readOnlyRef.current) return;
       const cfg = formConfigRef.current;
       if (!cfg?.ready || !cfg.fields?.length) return;
 
@@ -509,6 +538,18 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
     setEditFormValues(null);
     setAddRecordOpen(true);
   };
+
+  useEffect(() => {
+    if (!univerAPI) return undefined;
+    const timer = setTimeout(() => {
+      const result = applySheetRowTextFilter(univerAPI, rowFilter);
+      if (rowFilter.trim() && result.supported === false && !filterUnsupportedToastRef.current) {
+        filterUnsupportedToastRef.current = true;
+        toast.error('This sheet cannot hide filtered rows yet. Clear the filter box and use the grid Filter control if it appears in the ribbon.');
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [univerAPI, rowFilter, activeSheetName]);
 
   function scheduleDebouncedSave() {
     clearTimeout(debounceTimerRef.current);
@@ -787,51 +828,25 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
       style={{ height, width: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}
     >
       <div className="ts-editor-toolbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="ts-menubar">
           {(onCopyLink || onShare || onFileDelete) && (
-            <div ref={fileMenuRef} style={{ position: 'relative' }}>
+            <div ref={fileMenuRef} className="ts-menu-wrap">
               <button
                 type="button"
-                className="ts-btn ts-btn-secondary"
+                className={`ts-menubar-item${showFileMenu ? ' ts-menubar-item--open' : ''}`}
                 onClick={() => setShowFileMenu((open) => !open)}
               >
                 File
-                <span style={{ fontSize: 10, lineHeight: 1 }}>▾</span>
               </button>
               {showFileMenu && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 'calc(100% + 6px)',
-                    left: 0,
-                    minWidth: 168,
-                    background: '#fff',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: 8,
-                    boxShadow: '0 10px 28px rgba(15,23,42,0.12)',
-                    padding: 4,
-                    zIndex: 30,
-                  }}
-                >
+                <div className="ts-menu">
                   {onCopyLink && (
                     <button
                       type="button"
+                      className="ts-menu-item"
                       onClick={() => {
                         setShowFileMenu(false);
                         onCopyLink();
-                      }}
-                      style={{
-                        width: '100%',
-                        display: 'block',
-                        textAlign: 'left',
-                        padding: '8px 10px',
-                        border: 'none',
-                        borderRadius: 6,
-                        background: 'transparent',
-                        color: '#334155',
-                        fontSize: 13,
-                        fontWeight: 500,
-                        cursor: 'pointer',
                       }}
                     >
                       Copy link
@@ -840,22 +855,10 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
                   {onShare && (
                     <button
                       type="button"
+                      className="ts-menu-item"
                       onClick={(e) => {
                         setShowFileMenu(false);
                         onShare(e);
-                      }}
-                      style={{
-                        width: '100%',
-                        display: 'block',
-                        textAlign: 'left',
-                        padding: '8px 10px',
-                        border: 'none',
-                        borderRadius: 6,
-                        background: 'transparent',
-                        color: '#334155',
-                        fontSize: 13,
-                        fontWeight: 500,
-                        cursor: 'pointer',
                       }}
                     >
                       Share
@@ -864,27 +867,75 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
                   {onFileDelete && (
                     <button
                       type="button"
+                      className="ts-menu-item ts-menu-item--danger"
                       onClick={(e) => {
                         setShowFileMenu(false);
                         onFileDelete(e);
-                      }}
-                      style={{
-                        width: '100%',
-                        display: 'block',
-                        textAlign: 'left',
-                        padding: '8px 10px',
-                        border: 'none',
-                        borderRadius: 6,
-                        background: 'transparent',
-                        color: '#dc2626',
-                        fontSize: 13,
-                        fontWeight: 500,
-                        cursor: 'pointer',
                       }}
                     >
                       Delete
                     </button>
                   )}
+                </div>
+              )}
+            </div>
+          )}
+          <div ref={editMenuRef} className="ts-menu-wrap">
+            <button
+              type="button"
+              className={`ts-menubar-item${showEditMenu ? ' ts-menubar-item--open' : ''}`}
+              onClick={() => setShowEditMenu((open) => !open)}
+            >
+              Edit
+            </button>
+            {showEditMenu && (
+              <div className="ts-menu">
+                <button
+                  type="button"
+                  className="ts-menu-item"
+                  disabled={readOnly || !formConfig.ready}
+                  onClick={() => {
+                    if (readOnly || !formConfig.ready) return;
+                    setShowEditMenu(false);
+                    openAddRecordPanel();
+                  }}
+                >
+                  Add record
+                </button>
+              </div>
+            )}
+          </div>
+          {typeof onToggleFullscreen === 'function' && (
+            <div ref={viewMenuRef} className="ts-menu-wrap">
+              <button
+                type="button"
+                className={`ts-menubar-item${showViewMenu ? ' ts-menubar-item--open' : ''}`}
+                onClick={() => setShowViewMenu((open) => !open)}
+              >
+                View
+              </button>
+              {showViewMenu && (
+                <div className="ts-menu">
+                  <button
+                    type="button"
+                    className="ts-menu-item"
+                    onClick={() => {
+                      setShowViewMenu(false);
+                      onToggleFullscreen();
+                    }}
+                  >
+                    {isFullscreen ? 'Exit full screen' : 'Full screen'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ts-menu-item"
+                    onClick={() => {
+                      setShowViewMenu(false);
+                      setRowFilter('');
+                    }}
+                  >
+                    Clear row filter
+                  </button>
                 </div>
               )}
             </div>
@@ -908,12 +959,26 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
             </>
           )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
-          <AddRecordButton
-            disabled={!formConfig.ready || readOnly}
-            onClick={openAddRecordPanel}
+        <label className="ts-filter-bar">
+          <span className="ts-filter-bar__label">Filter</span>
+          <input
+            type="search"
+            className="ts-filter-bar__input"
+            value={rowFilter}
+            onChange={(e) => setRowFilter(e.target.value)}
+            placeholder="Show rows containing…"
+            aria-label="Filter rows"
           />
-        </div>
+          {rowFilter ? (
+            <button
+              type="button"
+              className="ts-filter-bar__clear"
+              onClick={() => setRowFilter('')}
+            >
+              Clear
+            </button>
+          ) : null}
+        </label>
       </div>
 
       <AddRecordPanel
@@ -923,6 +988,7 @@ const SpreadsheetEditor = forwardRef(function SpreadsheetEditor({
         config={formConfig}
         editRow={editingRow}
         initialFormValues={editFormValues}
+        readOnly={readOnly}
         onRecordAdded={() => {
           // Ensure local browser + autosave paths pick up the new/edited row even if
           // Univer doesn't emit SheetValueChanged for sparse setValues.

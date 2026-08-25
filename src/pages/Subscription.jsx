@@ -30,8 +30,8 @@ const plans = [
   {
     id: 'entry',
     name: 'Entry Level',
-    price: '1,200',
-    period: '/annum',
+    price: 'Meeting signup',
+    period: '',
     icon: FileSpreadsheet,
     description: 'Uploaded Google Sheets only — no Theta Sheets.',
     features: [
@@ -44,8 +44,8 @@ const plans = [
   {
     id: 'professional',
     name: 'Professional',
-    price: '1,500',
-    period: '/annum',
+    price: 'Meeting signup',
+    period: '',
     icon: Briefcase,
     description: 'Professional licenses with Theta Sheets access.',
     features: [

@@ -15,6 +15,7 @@ export default function AddRecordForm({
   initialFormValues = null,
   submitLabel = 'Add to sheet',
   successMessage = 'Row added to sheet',
+  readOnly = false,
 }) {
   const fields = config?.fields || [];
   const [values, setValues] = useState(() => ({
@@ -67,6 +68,10 @@ export default function AddRecordForm({
   };
 
   const handleSubmit = async (e) => {
+    if (readOnly) {
+      e?.preventDefault?.();
+      return;
+    }
     e?.preventDefault?.();
     if (!validate()) {
       toast.error('Please fill required fields.');
@@ -84,7 +89,9 @@ export default function AddRecordForm({
         }
       }
       toast.success(successMessage);
-      setValues(initialValues(fields));
+      if (!onSubmit) {
+        setValues(initialValues(fields));
+      }
       setErrors({});
       onSuccess?.();
     } catch (err) {
@@ -106,7 +113,7 @@ export default function AddRecordForm({
     <form className="add-record-form" onSubmit={handleSubmit}>
       <div className="add-record-panel__body">
         {fields.map((field) => {
-          if (!field.editable) {
+          if (!field.editable || readOnly) {
             const raw = values[field.column] !== undefined && values[field.column] !== null && values[field.column] !== ''
               ? values[field.column]
               : field.defaultValue;
@@ -143,8 +150,9 @@ export default function AddRecordForm({
           onClick={onCancel}
           disabled={submitting}
         >
-          Cancel
+          {readOnly ? 'Close' : 'Cancel'}
         </button>
+        {!readOnly ? (
         <button
           type="submit"
           className="add-record-btn add-record-btn--primary"
@@ -152,6 +160,7 @@ export default function AddRecordForm({
         >
           {submitting ? (submitLabel.toLowerCase().includes('save') ? 'Saving…' : 'Adding…') : submitLabel}
         </button>
+        ) : null}
       </div>
     </form>
   );

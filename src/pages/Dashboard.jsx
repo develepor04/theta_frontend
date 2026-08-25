@@ -18,6 +18,8 @@ import {
   ShieldAlert,
   Image,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ArrowLeft,
   Layers,
   EyeOff,
@@ -441,6 +443,8 @@ const Dashboard = () => {
   // Save -> View Reports: once saved with no edits since, the footer button
   // becomes "View Reports" instead of "Save"; any further edit flips it back.
   const [thetaJustSaved, setThetaJustSaved] = useState(false);
+  const [thetaSheetsFullscreen, setThetaSheetsFullscreen] = useState(false);
+  const [thetaSheetsNavCollapsed, setThetaSheetsNavCollapsed] = useState(false);
   const [showThetaReports, setShowThetaReports] = useState(false);
   const thetaLocalFileInputRef = useRef(null);
   const thetaLibraryUploadRef = useRef(null);
@@ -1381,6 +1385,8 @@ const Dashboard = () => {
     setThetaBrowserFileId(null);
     setThetaBrowserOpenedFile(null);
     setThetaJustSaved(false);
+    setThetaSheetsFullscreen(false);
+    setThetaSheetsNavCollapsed(false);
     setShowThetaReports(false);
     setShowOemCatalog(false);
     setShowThetaBrowser(true);
@@ -1429,6 +1435,8 @@ const Dashboard = () => {
       );
       if (thetaBrowserFileId === fileEntry.id) {
         setThetaBrowserStep("pickFile");
+        setThetaSheetsFullscreen(false);
+        setThetaSheetsNavCollapsed(false);
         setThetaBrowserSheets([]);
         setThetaBrowserSelected([]);
         setThetaBrowserFileName("");
@@ -2176,6 +2184,8 @@ const Dashboard = () => {
     setThetaBrowserFileId(null);
     setThetaBrowserOpenedFile(null);
     setThetaJustSaved(false);
+    setThetaSheetsFullscreen(false);
+    setThetaSheetsNavCollapsed(false);
     setThetaFileMenuId(null);
     setShowShareModal(false);
     setThetaShareLinkToken("");
@@ -2260,7 +2270,36 @@ const Dashboard = () => {
 
   const closeThetaEditor = () => {
     setShowThetaEditor(false);
+    setThetaSheetsFullscreen(false);
   };
+
+  const toggleThetaSheetsFullscreen = () => {
+    setThetaSheetsFullscreen((open) => !open);
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+  };
+
+  const toggleThetaSheetsNavCollapsed = () => {
+    setThetaSheetsNavCollapsed((collapsed) => !collapsed);
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+  };
+
+  useEffect(() => {
+    if (!thetaSheetsFullscreen) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        setThetaSheetsFullscreen(false);
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event("resize"));
+        });
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [thetaSheetsFullscreen]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -3122,7 +3161,7 @@ const Dashboard = () => {
       ══════════════════════════════════════════════════════════════════════ */}
       {showThetaEditor && (
         <div
-          className="ts-workspace"
+          className={`ts-workspace${thetaSheetsFullscreen ? " ts-workspace--sheet-fullscreen" : ""}`}
           style={{
             position: "fixed",
             inset: 0,
@@ -3191,6 +3230,8 @@ const Dashboard = () => {
                   }
                 }}
                 onValidation={setThetaEditorValidation}
+                isFullscreen={thetaSheetsFullscreen}
+                onToggleFullscreen={toggleThetaSheetsFullscreen}
                 height="100%"
               />
             </div>
@@ -5513,7 +5554,7 @@ const Dashboard = () => {
           const isSheetsStep = thetaBrowserStep === "pickSheets";
           return (
             <div
-              className="ts-workspace"
+              className={`ts-workspace${thetaSheetsFullscreen && isSheetsStep ? " ts-workspace--sheet-fullscreen" : ""}`}
               style={{
                 position: "fixed",
                 inset: 0,
@@ -5561,31 +5602,13 @@ const Dashboard = () => {
                     </span>
                     {isSheetsStep && openedAccessRoleLabel && (
                       <span
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          color:
-                            openedAccessRoleLabel === "View only"
-                              ? "#64748b"
-                              : openedAccessRoleLabel === "Owner"
-                                ? "#b45309"
-                                : "#1d4ed8",
-                          background:
-                            openedAccessRoleLabel === "View only"
-                              ? "#f8fafc"
-                              : openedAccessRoleLabel === "Owner"
-                                ? "#fffbeb"
-                                : "#eff6ff",
-                          border:
-                            openedAccessRoleLabel === "View only"
-                              ? "1px solid #e2e8f0"
-                              : openedAccessRoleLabel === "Owner"
-                                ? "1px solid #fde68a"
-                                : "1px solid #bfdbfe",
-                          borderRadius: 999,
-                          padding: "2px 8px",
-                          flexShrink: 0,
-                        }}
+                        className={`ts-role-badge${
+                          openedAccessRoleLabel === "Owner"
+                            ? " ts-role-badge--owner"
+                            : openedAccessRoleLabel === "View only"
+                              ? " ts-role-badge--viewer"
+                              : " ts-role-badge--editor"
+                        }`}
                       >
                         {openedAccessRoleLabel}
                       </span>
@@ -6441,37 +6464,42 @@ const Dashboard = () => {
                 ) : (
                   /* ── Step 2: check sheet(s) to load; clicking a sheet edits it inline ── */
                   <div
-                    style={{
-                      flex: 1,
-                      display: "flex",
-                      flexDirection: isMobile ? "column" : "row",
-                      overflow: "hidden",
-                      padding: isMobile ? "12px 14px 0" : "16px 24px 0",
-                    }}
+                    className={[
+                      "ts-sheets-stage",
+                      isMobile ? "ts-sheets-stage--mobile" : "",
+                      thetaSheetsNavCollapsed
+                        ? "ts-sheets-stage--nav-collapsed"
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                   >
-                    <div
-                      style={{
-                        width: isMobile ? "100%" : 240,
-                        flexShrink: 0,
-                        borderRight: isMobile ? "none" : "1px solid #e2e8f0",
-                        borderBottom: isMobile ? "1px solid #e2e8f0" : "none",
-                        paddingRight: isMobile ? 0 : 16,
-                        paddingBottom: isMobile ? 10 : 0,
-                        maxHeight: isMobile ? 130 : "none",
-                        overflowY: "auto",
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          color: "#94a3b8",
-                          textTransform: "uppercase",
-                          letterSpacing: "0.04em",
-                          marginBottom: 8,
-                        }}
+                    {thetaSheetsNavCollapsed ? (
+                      <button
+                        type="button"
+                        className="ts-sheets-nav-expand"
+                        onClick={toggleThetaSheetsNavCollapsed}
+                        aria-label="Show sheets"
+                        title="Show sheets"
                       >
-                        Sheets [{thetaBrowserSheets.length}]
+                        <ChevronRight size={16} />
+                        {isMobile ? <span>Sheets</span> : null}
+                      </button>
+                    ) : (
+                    <div className="ts-sheets-nav">
+                      <div className="ts-sheets-nav-header">
+                        <div className="ts-sheets-nav-title">
+                          Sheets [{thetaBrowserSheets.length}]
+                        </div>
+                        <button
+                          type="button"
+                          className="ts-btn ts-btn-ghost ts-sheets-nav-toggle"
+                          onClick={toggleThetaSheetsNavCollapsed}
+                          aria-label="Hide sheets"
+                          title="Hide sheets"
+                        >
+                          <ChevronLeft size={16} />
+                        </button>
                       </div>
                       {thetaBrowserSheets.map((s, idx) => (
                         // Plain div, not <label> -- a <label> wrapping a checkbox
@@ -6484,25 +6512,16 @@ const Dashboard = () => {
                         // a remount/reload).
                         <div
                           key={s.name}
+                          className={`ts-sheets-nav-item${
+                            idx === thetaBrowserPreviewIdx
+                              ? " ts-sheets-nav-item--active"
+                              : ""
+                          }`}
                           onClick={() => {
                             setThetaBrowserPreviewIdx(idx);
                             thetaBrowserEditorRef.current?.setActiveSheetByName(
                               s.name,
                             );
-                          }}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "8px 9px",
-                            borderRadius: 6,
-                            cursor: "pointer",
-                            fontSize: 13,
-                            color: "#0f172a",
-                            background:
-                              idx === thetaBrowserPreviewIdx
-                                ? "#f0fdf4"
-                                : "transparent",
                           }}
                         >
                           <input
@@ -6511,48 +6530,32 @@ const Dashboard = () => {
                             onChange={() => toggleThetaBrowserSheet(s.name)}
                             onClick={(e) => e.stopPropagation()}
                             style={{
-                              accentColor: "#16a34a",
+                              accentColor: "#00b359",
                               cursor: "pointer",
                               flexShrink: 0,
                             }}
                           />
-                          <span
-                            style={{
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
+                          <span className="ts-sheets-nav-item-name">
                             {s.name}
                           </span>
                           {hasScheduleHeaders(s.headers) && (
                             <CheckCircle
                               size={12}
-                              color="#16a34a"
+                              color="#00b359"
                               style={{ flexShrink: 0, marginLeft: "auto" }}
                             />
                           )}
                         </div>
                       ))}
                     </div>
+                    )}
 
                     {/* Inline editable preview — editing happens here, in this same step.
                       All parsed sheets load into one workbook at once, so
                       Univer's own native sheet tabs (bottom of the grid) let
                       the user click through every sheet directly, same as a
                       normal spreadsheet — not just whichever one is checked. */}
-                    <div
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        minHeight: 0,
-                        paddingLeft: isMobile ? 0 : 20,
-                        paddingTop: isMobile ? 12 : 0,
-                        paddingBottom: 16,
-                        display: "flex",
-                        flexDirection: "column",
-                      }}
-                    >
+                    <div className="ts-sheets-editor">
                       {thetaBrowserSheets.length === 0 ? (
                         <div className="ts-empty">
                           <strong>No sheets in this file</strong>
@@ -6563,8 +6566,8 @@ const Dashboard = () => {
                           style={{
                             flex: 1,
                             minHeight: 0,
-                            border: "1px solid var(--ts-line, #e2e8f0)",
-                            borderRadius: 8,
+                            border: "1px solid var(--ts-line, #d8dce0)",
+                            borderRadius: 4,
                             overflow: "hidden",
                             background: "#fff",
                           }}
@@ -6611,6 +6614,8 @@ const Dashboard = () => {
                                 : undefined
                             }
                             height="100%"
+                            isFullscreen={thetaSheetsFullscreen}
+                            onToggleFullscreen={toggleThetaSheetsFullscreen}
                           />
                         </div>
                       )}
@@ -6625,7 +6630,11 @@ const Dashboard = () => {
                     className="ts-btn ts-btn-secondary"
                     onClick={
                       thetaBrowserStep === "pickSheets"
-                        ? () => setThetaBrowserStep("pickFile")
+                        ? () => {
+                            setThetaSheetsFullscreen(false);
+                            setThetaSheetsNavCollapsed(false);
+                            setThetaBrowserStep("pickFile");
+                          }
                         : closeThetaBrowser
                     }
                   >
