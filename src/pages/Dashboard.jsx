@@ -6538,13 +6538,6 @@ const Dashboard = () => {
                           <span className="ts-sheets-nav-item-name">
                             {s.name}
                           </span>
-                          {hasScheduleHeaders(s.headers) && (
-                            <CheckCircle
-                              size={12}
-                              color="#00b359"
-                              style={{ flexShrink: 0, marginLeft: "auto" }}
-                            />
-                          )}
                         </div>
                       ))}
                     </div>
