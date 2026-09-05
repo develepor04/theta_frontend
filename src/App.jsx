@@ -175,10 +175,11 @@ function App() {
           path="/overview"
           element={renderOverviewRoute()}
         />
-        <Route
-          path="/dashboard"
-          element={renderProtected(<Dashboard />)}
-        />
+        {/* Pathless layout keeps Dashboard mounted when switching /dashboard ↔ /sheets */}
+        <Route element={renderProtected(<Dashboard />)}>
+          <Route path="/dashboard" element={<></>} />
+          <Route path="/sheets" element={<></>} />
+        </Route>
         <Route
           path="/s/:fileId/:linkToken"
           element={<ThetaSharePage />}

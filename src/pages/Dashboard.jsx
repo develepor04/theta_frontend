@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useLocation, Outlet } from "react-router-dom";
 import toast from "react-hot-toast";
 import {
   Upload,
@@ -354,7 +354,9 @@ const INGEST_PRIMARY_DISABLED = "#a7f3d0";
 // ─────────────────────────────────────────────────────────────────────────────
 const Dashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { shareToken } = useParams();
+  const skipSheetsRouteOpen = useRef(false);
   const {
     user,
     uploadedFiles,
@@ -448,6 +450,15 @@ const Dashboard = () => {
   const [showThetaReports, setShowThetaReports] = useState(false);
   const thetaLocalFileInputRef = useRef(null);
   const thetaLibraryUploadRef = useRef(null);
+
+  const enterSheetsUrl = () => {
+    if (location.pathname !== "/sheets") navigate("/sheets");
+  };
+
+  const leaveSheetsUrl = () => {
+    skipSheetsRouteOpen.current = true;
+    if (location.pathname === "/sheets") navigate("/dashboard");
+  };
 
   // ── OEM dropdown ──────────────────────────────────────────────────────────
   const [showOemMenu, setShowOemMenu] = useState(false);
@@ -1319,6 +1330,7 @@ const Dashboard = () => {
       };
       setThetaEditorValidation(null);
       setShowThetaEditor(true);
+      enterSheetsUrl();
     } catch (err) {
       toast.error("Could not open Theta Sheets. Please try again.");
     } finally {
@@ -1347,6 +1359,7 @@ const Dashboard = () => {
       return;
     }
     const file = gridToXlsxFile(grid, "Theta Sheets.xlsx");
+    leaveSheetsUrl();
     setShowThetaEditor(false);
     handleThetaConnect(null, file);
   };
@@ -1390,6 +1403,7 @@ const Dashboard = () => {
     setShowThetaReports(false);
     setShowOemCatalog(false);
     setShowThetaBrowser(true);
+    enterSheetsUrl();
     loadThetaLibraryFiles();
   };
 
@@ -1871,6 +1885,7 @@ const Dashboard = () => {
         const fileEntry = await thetaFileService.getByLink(token);
         if (cancelled) return;
         setShowThetaBrowser(true);
+        enterSheetsUrl();
         await handleThetaBrowserPickFile(fileEntry, token);
       } catch (err) {
         if (!cancelled) {
@@ -2176,6 +2191,7 @@ const Dashboard = () => {
   };
 
   const closeThetaBrowser = () => {
+    leaveSheetsUrl();
     setShowThetaBrowser(false);
     setThetaBrowserStep("pickFile");
     setThetaBrowserSheets([]);
@@ -2269,9 +2285,30 @@ const Dashboard = () => {
   };
 
   const closeThetaEditor = () => {
+    leaveSheetsUrl();
     setShowThetaEditor(false);
     setThetaSheetsFullscreen(false);
   };
+
+  useEffect(() => {
+    if (location.pathname === "/sheets") {
+      if (
+        !skipSheetsRouteOpen.current &&
+        !showThetaEditor &&
+        !showThetaBrowser
+      ) {
+        openThetaBrowser();
+      }
+      return;
+    }
+    if (location.pathname === "/dashboard") {
+      skipSheetsRouteOpen.current = false;
+      if (showThetaEditor) setShowThetaEditor(false);
+      if (showThetaBrowser) setShowThetaBrowser(false);
+    }
+    // Only react to URL changes so closing/opening overlays does not loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   const toggleThetaSheetsFullscreen = () => {
     setThetaSheetsFullscreen((open) => !open);
@@ -7935,6 +7972,7 @@ const Dashboard = () => {
           </div>
         </div>
       )}
+      <Outlet />
     </div>
   );
 };
