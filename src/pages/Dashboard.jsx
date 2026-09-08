@@ -873,6 +873,7 @@ const Dashboard = () => {
   const [previewRecord, setPreviewRecord] = useState(null);
   const [previewSheet, setPreviewSheet] = useState(null);
   const [previewData, setPreviewData] = useState(null);
+  const [previewError, setPreviewError] = useState("");
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
 
   // ── S-curve modal ─────────────────────────────────────────────────────────
@@ -1244,12 +1245,16 @@ const Dashboard = () => {
     setPreviewRecord(record);
     setPreviewSheet(sheet);
     setPreviewData(null);
+    setPreviewError("");
     setIsLoadingPreview(true);
     try {
       const data = await fileService.preview(record.id, sheet.sheet_name, 600);
       setPreviewData({ ...data, jobId: record.id });
-    } catch {
-      toast.error("Failed to load preview");
+    } catch (err) {
+      const message =
+        err?.response?.data?.error || "Failed to load preview";
+      setPreviewError(message);
+      toast.error(message);
     } finally {
       setIsLoadingPreview(false);
     }
@@ -1259,6 +1264,7 @@ const Dashboard = () => {
     setPreviewRecord(null);
     setPreviewSheet(null);
     setPreviewData(null);
+    setPreviewError("");
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -3661,7 +3667,7 @@ const Dashboard = () => {
                     fontSize: 13,
                   }}
                 >
-                  No preview available.
+                  {previewError || "No preview available."}
                 </div>
               )}
             </div>
